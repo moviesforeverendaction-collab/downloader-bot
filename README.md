@@ -55,11 +55,28 @@ SELF_PING_URL=optional_url           # Optional - for Heroku/Render keep-alive
 ### Heroku Deployment
 
 1. Fork this repository
-2. Connect to Heroku
-3. Set environment variables in Heroku dashboard
-4. Deploy!
+2. Create a new Heroku app:
+   ```bash
+   heroku create your-app-name
+   ```
+3. Add the Apt buildpack (required for aria2 and ffmpeg):
+   ```bash
+   heroku buildpacks:add -a your-app-name https://github.com/heroku/heroku-buildpack-apt.git
+   heroku buildpacks:add -a your-app-name heroku/python
+   ```
+4. Set environment variables in Heroku dashboard or via CLI:
+   ```bash
+   heroku config:set API_ID=your_telegram_api_id -a your-app-name
+   heroku config:set API_HASH=your_telegram_api_hash -a your-app-name
+   heroku config:set BOT_TOKEN=your_bot_token -a your-app-name
+   heroku config:set PORT=8080 -a your-app-name
+   ```
+5. Deploy to Heroku:
+   ```bash
+   git push heroku main
+   ```
 
-The bot is optimized for Heroku's ephemeral filesystem and network constraints.
+**Note**: The bot is optimized for Heroku's ephemeral filesystem and network constraints. The `heroku.sh` script automatically starts aria2c with RPC enabled before launching the bot.
 
 ### Docker
 

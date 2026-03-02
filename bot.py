@@ -9,7 +9,7 @@ import aiohttp
 
 from aiohttp import web
 from pyrogram import Client, filters, idle, enums
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from config import settings
 from utils import format_progress, format_bytes
@@ -19,7 +19,7 @@ from lastperson07.settings_db import (
     get_custom_caption, set_custom_caption,
     get_custom_thumb, set_custom_thumb
 )
-from lastperson07.aria2_client import add_download, monitor_download
+from lastperson07.aria2_client import add_download, monitor_download, aria2_rpc
 from lastperson07.split_utils import split_large_file
 
 # ---------------------------------------------------------------------------
@@ -36,14 +36,27 @@ app = Client(
 _last_edit_time = {}
 FLOOD_COOLDOWN = 3.0
 
-async def safe_edit(msg, text):
+# Active downloads: maps message_id → {"gid": str, "cancelled": bool}
+_active_downloads: dict[int, dict] = {}
+
+
+def _cancel_keyboard(msg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        "❌ Cancel", callback_data=f"cancel:{msg_id}"
+    )]])
+
+async def safe_edit(msg, text, reply_markup=None):
     """Edit a message, throttled to once per FLOOD_COOLDOWN seconds."""
     now = time.time()
     msg_id = msg.id
     if now - _last_edit_time.get(msg_id, 0) < FLOOD_COOLDOWN:
         return
     try:
-        await msg.edit_text(text, parse_mode=enums.ParseMode.MARKDOWN)
+        await msg.edit_text(
+            text,
+            parse_mode=enums.ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+        )
         _last_edit_time[msg_id] = time.time()
     except Exception:
         pass
@@ -79,7 +92,39 @@ def start_aria2_daemon():
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cancel button callback
+# ---------------------------------------------------------------------------
+@app.on_callback_query(filters.regex(r"^cancel:(\d+)$"))
+async def cancel_callback(client, callback_query: CallbackQuery):
+    msg_id = int(callback_query.matches[0].group(1))
+
+    entry = _active_downloads.get(msg_id)
+    if not entry:
+        await callback_query.answer("Nothing to cancel (already finished?).", show_alert=True)
+        return
+
+    # Mark as cancelled so leech_handler picks it up after monitor_download returns
+    entry["cancelled"] = True
+
+    # Tell aria2 to stop the download immediately
+    gid = entry.get("gid")
+    if gid:
+        await aria2_rpc("aria2.forceRemove", [gid])
+
+    await callback_query.answer("🚫 Cancelling...")
+    try:
+        await callback_query.message.edit_text(
+            "🚫 **Download cancelled.**",
+            parse_mode=enums.ParseMode.MARKDOWN,
+        )
+    except Exception:
+        pass
+
+
 @app.on_message(filters.command("start"))
+
 async def start_handler(client, message):
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         await message.reply_text("⛔️ **Access Denied:** You are not authorized to use this bot.")
@@ -171,12 +216,27 @@ async def leech_handler(client, message):
 
         async def dl_progress(action, current, total, t0, speed=0, eta_seconds=0):
             # Pass aria2-reported speed & ETA straight into format_progress
-            await safe_edit(status, format_progress(current, total, t0, action, speed=speed, eta_seconds=eta_seconds))
+            # Show cancel button while downloading
+            await safe_edit(
+                status,
+                format_progress(current, total, t0, action, speed=speed, eta_seconds=eta_seconds),
+                reply_markup=_cancel_keyboard(status.id),
+            )
 
-        await safe_edit(status, "⬇️ **Downloading...**")
+        await safe_edit(status, "⬇️ **Downloading...**", reply_markup=_cancel_keyboard(status.id))
         start_time = time.time()
+
+        # Register this download so the cancel callback can reach it
+        _active_downloads[status.id] = {"gid": gid, "cancelled": False}
         
         success, result_path_or_err = await monitor_download(gid, dl_progress, start_time)
+
+        # Check if cancelled during download
+        entry = _active_downloads.get(status.id, {})
+        if entry.get("cancelled"):
+            _active_downloads.pop(status.id, None)
+            await safe_edit(status, "🚫 **Download cancelled.**")
+            return
         
         if not success:
             await safe_edit(status, f"❌ **Aria2 Error:** `{result_path_or_err}`")
@@ -191,6 +251,8 @@ async def leech_handler(client, message):
         size = os.path.getsize(filepath)
 
         await safe_edit(status, "✂️ **Checking file size for splitting...**")
+        _active_downloads.pop(status.id, None)  # no longer cancellable mid-upload
+
         
         # 2. Split file natively if > 1.9GB
         file_parts = await split_large_file(filepath)
@@ -265,10 +327,16 @@ async def leech_handler(client, message):
 
         await safe_edit(status, "✅ **All done!** 🎉")
 
+    except asyncio.CancelledError:
+        _active_downloads.pop(status.id, None)
+        await safe_edit(status, "🚫 **Download cancelled.**")
+
     except Exception as exc:
+        _active_downloads.pop(status.id, None)
         await safe_edit(status, f"❌ **Error:** `{str(exc)}`")
 
     finally:
+        _active_downloads.pop(status.id, None)
         # Cleanup part files
         try:
             if 'file_parts' in locals():

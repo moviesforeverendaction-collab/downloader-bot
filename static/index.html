@@ -183,6 +183,7 @@
 
         <!-- Input Section -->
         <div class="space-y-4">
+            <!-- URL Input -->
             <div class="relative">
                 <label class="block text-sm font-medium text-gray-300 mb-2 ml-1">Download URL</label>
                 <div class="relative">
@@ -196,7 +197,21 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
                     </svg>
                 </div>
-                <p class="text-xs text-gray-500 mt-2 ml-1">Supports direct links, magnet links, and torrents</p>
+                <p class="text-xs text-gray-500 mt-2 ml-1">Supports direct links, magnet links, and torrent files</p>
+            </div>
+
+            <!-- Drag & Drop Zone -->
+            <div 
+                id="dropZone" 
+                class="border-2 border-dashed border-white/20 rounded-xl p-6 text-center transition-all duration-300 hover:border-cyan-400/50 hover:bg-white/5 cursor-pointer"
+                onclick="document.getElementById('torrentInput').click()"
+            >
+                <input type="file" id="torrentInput" accept=".torrent" class="hidden" onchange="handleTorrentFile(this)">
+                <svg class="w-8 h-8 text-gray-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+                <p class="text-sm text-gray-400">Drop a .torrent file here or click to browse</p>
+                <p class="text-xs text-gray-600 mt-1" id="dropZoneFile">No file selected</p>
             </div>
 
             <button 
@@ -298,6 +313,7 @@
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
+        let selectedTorrentFile = null;
         
         // Create floating particles
         function createParticles() {
@@ -309,6 +325,59 @@
                 particle.style.animationDelay = Math.random() * 20 + 's';
                 particle.style.animationDuration = (15 + Math.random() * 10) + 's';
                 container.appendChild(particle);
+            }
+        }
+        
+        // Drag and Drop handlers
+        const dropZone = document.getElementById('dropZone');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight(e) {
+            dropZone.classList.add('border-cyan-400', 'bg-white/10');
+        }
+        
+        function unhighlight(e) {
+            dropZone.classList.remove('border-cyan-400', 'bg-white/10');
+        }
+        
+        dropZone.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length > 0 && files[0].name.endsWith('.torrent')) {
+                handleTorrentFile({ files: files });
+            } else {
+                addLog('Please drop a .torrent file', 'error');
+            }
+        }
+        
+        function handleTorrentFile(input) {
+            const file = input.files[0];
+            if (file && file.name.endsWith('.torrent')) {
+                selectedTorrentFile = file;
+                document.getElementById('dropZoneFile').textContent = `Selected: ${file.name}`;
+                document.getElementById('dropZoneFile').classList.add('text-cyan-400');
+                addLog(`Torrent file selected: ${file.name}`, 'success');
+            } else {
+                addLog('Invalid file. Please select a .torrent file', 'error');
             }
         }
         
@@ -510,14 +579,14 @@
             btnText.textContent = 'Start Download';
         }
         
-        function startLeech() {
+        async function startLeech() {
             const urlInput = document.getElementById('urlInput');
             const url = urlInput.value.trim();
             const btn = document.getElementById('leechBtn');
             const btnText = document.getElementById('btnText');
             
-            if (!url) {
-                alert('Please enter a URL');
+            if (!url && !selectedTorrentFile) {
+                alert('Please enter a URL or select a torrent file');
                 return;
             }
             
@@ -539,9 +608,33 @@
             btn.disabled = true;
             btnText.textContent = 'Processing...';
             
-            addLog('Starting download: ' + url.substring(0, 50) + (url.length > 50 ? '...' : ''));
-            
-            ws.send(JSON.stringify({ url: url }));
+            // Handle torrent file upload
+            if (selectedTorrentFile) {
+                addLog('Reading torrent file: ' + selectedTorrentFile.name);
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const arrayBuffer = e.target.result;
+                    const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(arrayBuffer)));
+                    
+                    addLog('Uploading torrent file...');
+                    ws.send(JSON.stringify({
+                        torrent_data: base64,
+                        torrent_name: selectedTorrentFile.name
+                    }));
+                    
+                    // Reset file selection
+                    selectedTorrentFile = null;
+                    document.getElementById('torrentInput').value = '';
+                    document.getElementById('dropZoneFile').textContent = 'No file selected';
+                    document.getElementById('dropZoneFile').classList.remove('text-cyan-400');
+                };
+                reader.readAsArrayBuffer(selectedTorrentFile);
+            } else {
+                // URL download
+                addLog('Starting download: ' + url.substring(0, 50) + (url.length > 50 ? '...' : ''));
+                ws.send(JSON.stringify({ url: url }));
+            }
         }
         
         // Enter key support

@@ -141,16 +141,19 @@ async def start_handler(client: Client, message: Message) -> None:
         
     welcome_text = (
         "🚀 **TG Leecher Bot (Aria2 Powered)**\n\n"
-        "Send me any downloadable link, magnet, or torrent file!\n\n"
+        "Send me any downloadable link, magnet link, or upload a **.torrent** file!\n\n"
         "**✨ Features:**\n"
-        "• Direct links, magnets, torrents support\n"
+        "• Direct links, magnets, torrent files support\n"
         "• Auto-splits files **> 1.9 GB** natively\n"
         "• High-speed download & upload\n"
         "• Real-time progress tracking\n\n"
-        "**⚙️ Settings Commands:**\n"
+        "**🔧 Commands:**\n"
+        "`/status` - Check bot status & disk space\n"
+        "`/cancel` - Cancel active download\n"
         "`/setdump <channel_id>` - Set dump channel\n"
         "`/setcaption <text>` - Set custom caption\n"
-        "`/setthumb` (reply to image) - Set thumbnail"
+        "`/setthumb` (reply to image) - Set thumbnail\n"
+        "`/help` - Show detailed help"
     )
     await message.reply_text(welcome_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -163,15 +166,22 @@ async def help_handler(client: Client, message: Message) -> None:
         
     help_text = (
         "**📖 How to Use:**\n\n"
-        "1. **Download:** Simply send any URL, magnet link, or torrent file\n"
-        "2. **Cancel:** Click the cancel button during download\n"
-        "3. **Settings:** Use commands to customize uploads\n\n"
-        "**🔧 Commands:**\n"
+        "1️⃣ **Send a link:** Paste any direct URL or magnet link\n"
+        "2️⃣ **Upload torrent:** Send a `.torrent` file directly\n"
+        "3️⃣ **Monitor progress:** Watch real-time download/upload progress\n"
+        "4️⃣ **Cancel:** Use `/cancel` or click the cancel button\n\n"
+        "**🔧 Available Commands:**\n"
         "• `/start` - Show welcome message\n"
+        "• `/status` - Check bot status and disk space\n"
+        "• `/cancel` - Cancel your active download\n"
         "• `/setdump <channel_id>` - Set channel for auto-uploads\n"
         "• `/setcaption <text>` - Add custom caption to uploads\n"
-        "• `/setthumb` (reply to image) - Set thumbnail for videos\n"
-        "• `/cancel` - Cancel active download"
+        "• `/setthumb` (reply to image) - Set thumbnail\n"
+        "• `/help` - Show this help message\n\n"
+        "**💡 Tips:**\n"
+        "• Files larger than 1.9GB are automatically split\n"
+        "• Use the Web UI for a visual experience\n"
+        "• Set a dump channel to auto-upload files there"
     )
     await message.reply_text(help_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -228,21 +238,120 @@ async def setthumb_handler(client: Client, message: Message) -> None:
     await message.reply_text("✅ **Custom thumbnail saved!**")
 
 
-# ---------------------------------------------------------------------------
-# Main Leech Handler - Downloads and Uploads
-# ---------------------------------------------------------------------------
-@app.on_message(filters.text & filters.regex(r"(https?://\S+|magnet:\?xt=urn:btih:\S+)"))
-async def leech_handler(client: Client, message: Message) -> None:
-    """Handle download URLs and upload files to Telegram."""
+@app.on_message(filters.command("status"))
+async def status_handler(client: Client, message: Message) -> None:
+    """Handle /status command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         return
+    
+    active_count = len(_active_downloads)
+    download_dir = settings.DOWNLOAD_DIR
+    
+    # Calculate disk usage
+    try:
+        import shutil
+        total, used, free = shutil.disk_usage(download_dir)
+        disk_info = f"💾 Disk Free: `{format_bytes(free)}` / `{format_bytes(total)}`"
+    except Exception:
+        disk_info = "💾 Disk: Unknown"
+    
+    status_text = (
+        "📊 **Bot Status**\n\n"
+        f"⬇️ Active Downloads: `{active_count}`\n"
+        f"📁 Download Dir: `{download_dir}`\n"
+        f"{disk_info}\n\n"
+        f"✅ Bot is running normally"
+    )
+    await message.reply_text(status_text, parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@app.on_message(filters.command("cancel"))
+async def cancel_cmd_handler(client: Client, message: Message) -> None:
+    """Handle /cancel command."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+    
+    # Find active download for this user
+    user_active = None
+    for msg_id, entry in _active_downloads.items():
+        # Check if the status message belongs to this user
+        try:
+            msg = await client.get_messages(message.chat.id, msg_id)
+            if msg and msg.from_user and msg.from_user.id == client.me.id:
+                user_active = (msg_id, entry)
+                break
+        except Exception:
+            continue
+    
+    if not user_active:
+        await message.reply_text("ℹ️ No active download to cancel.")
+        return
+    
+    msg_id, entry = user_active
+    entry["cancelled"] = True
+    gid = entry.get("gid")
+    
+    if gid:
+        await aria2_rpc("aria2.forceRemove", [gid])
+    
+    await message.reply_text("🚫 **Download cancelled.**")
+
+
+@app.on_message(filters.document)
+async def torrent_handler(client: Client, message: Message) -> None:
+    """Handle torrent file uploads."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+    
+    # Check if it's a torrent file
+    if not message.document or not message.document.file_name:
+        return
         
-    url = message.text.strip()
+    if not message.document.file_name.endswith('.torrent'):
+        return
+    
     status = await message.reply_text(
-        "🔍 **Initializing download...**",
+        "📥 **Received torrent file, downloading...**",
         parse_mode=enums.ParseMode.MARKDOWN,
     )
+    
+    try:
+        # Download the torrent file
+        torrent_path = await client.download_media(message.document)
+        if not torrent_path:
+            await safe_edit(status, "❌ **Failed to download torrent file.**")
+            return
+        
+        # Convert to magnet or use as-is with aria2
+        # For torrent files, we'll use the file path directly
+        await safe_edit(status, "🔍 **Processing torrent...**")
+        
+        # Create a file:// URL for the torrent
+        torrent_url = f"file://{os.path.abspath(torrent_path)}"
+        
+        # Now process as a regular download
+        await process_download(client, message, torrent_url, status)
+        
+        # Cleanup torrent file
+        try:
+            if os.path.exists(torrent_path):
+                os.remove(torrent_path)
+        except Exception:
+            pass
+            
+    except Exception as e:
+        print(f"[torrent_handler] Error: {e}")
+        await safe_edit(status, f"❌ **Error:** `{str(e)[:200]}`")
 
+
+# ---------------------------------------------------------------------------
+# Download Processing Logic
+# ---------------------------------------------------------------------------
+async def process_download(client: Client, message: Message, url: str, status: Message) -> None:
+    """
+    Process a download from URL/magnet and upload to Telegram.
+    This is the core download/upload logic shared by URL and torrent handlers.
+    """
     user_id = message.from_user.id
     target_chat_id = get_dump_channel(user_id) or message.chat.id
     custom_caption = get_custom_caption(user_id) or ""
@@ -370,7 +479,7 @@ async def leech_handler(client: Client, message: Message) -> None:
         await safe_edit(status, "🚫 **Download cancelled.**")
 
     except Exception as exc:
-        print(f"[leech_handler] Error: {exc}")
+        print(f"[process_download] Error: {exc}")
         await safe_edit(status, f"❌ **Error:** `{str(exc)[:200]}`")
 
     finally:
@@ -392,6 +501,24 @@ async def leech_handler(client: Client, message: Message) -> None:
                 print(f"[cleanup] Removed thumbnail: {thumb_path}")
         except Exception as e:
             print(f"[cleanup] Error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Main Leech Handler - Downloads and Uploads
+# ---------------------------------------------------------------------------
+@app.on_message(filters.text & filters.regex(r"(https?://\S+|magnet:\?xt=urn:btih:\S+)"))
+async def leech_handler(client: Client, message: Message) -> None:
+    """Handle download URLs and upload files to Telegram."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+        
+    url = message.text.strip()
+    status = await message.reply_text(
+        "🔍 **Initializing download...**",
+        parse_mode=enums.ParseMode.MARKDOWN,
+    )
+    
+    await process_download(client, message, url, status)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +550,7 @@ async def health_check(request):
     })
 
 
-async def web_download_task(ws, url: str):
+async def web_download_task(ws, url: str, cleanup_torrent: str = None):
     """Handle download from Web UI via WebSocket."""
     filepath = None
     file_parts = []
@@ -531,13 +658,17 @@ async def web_download_task(ws, url: str):
                     os.remove(part)
             if filepath and os.path.exists(filepath):
                 os.remove(filepath)
+            # Cleanup uploaded torrent file
+            if cleanup_torrent and os.path.exists(cleanup_torrent):
+                os.remove(cleanup_torrent)
+                print(f"[web_cleanup] Removed torrent file: {cleanup_torrent}")
         except Exception as e:
             print(f"[web_cleanup] Error: {e}")
 
 
 async def websocket_handler(request):
     """WebSocket handler for real-time updates."""
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(max_msg_size=10*1024*1024)  # 10MB max for torrent files
     await ws.prepare(request)
     
     async for msg in ws:
@@ -545,8 +676,30 @@ async def websocket_handler(request):
             try:
                 data = json.loads(msg.data)
                 url = data.get("url")
+                torrent_data = data.get("torrent_data")  # Base64 encoded torrent
+                torrent_name = data.get("torrent_name")
+                
                 if url:
                     asyncio.create_task(web_download_task(ws, url))
+                elif torrent_data and torrent_name:
+                    # Handle torrent file upload
+                    import base64
+                    try:
+                        torrent_bytes = base64.b64decode(torrent_data)
+                        torrent_path = os.path.join(settings.DOWNLOAD_DIR, torrent_name)
+                        
+                        # Save torrent file
+                        with open(torrent_path, 'wb') as f:
+                            f.write(torrent_bytes)
+                        
+                        # Process as file:// URL
+                        file_url = f"file://{os.path.abspath(torrent_path)}"
+                        asyncio.create_task(web_download_task(ws, file_url, cleanup_torrent=torrent_path))
+                    except Exception as e:
+                        await ws.send_json({"status": "error", "message": f"Failed to process torrent: {str(e)}"})
+                else:
+                    await ws.send_json({"status": "error", "message": "No URL or torrent provided"})
+                    
             except json.JSONDecodeError:
                 await ws.send_json({"status": "error", "message": "Invalid JSON"})
             except Exception as e:

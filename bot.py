@@ -21,7 +21,9 @@ from utils import format_progress, format_bytes
 from lastperson07.settings_db import (
     get_dump_channel, set_dump_channel,
     get_custom_caption, set_custom_caption,
-    get_custom_thumb, set_custom_thumb
+    get_custom_thumb, set_custom_thumb,
+    get_user_telegram_id, set_user_telegram_id,
+    get_web_upload_target
 )
 from lastperson07.aria2_client import add_download, monitor_download, aria2_rpc
 from lastperson07.split_utils import split_large_file
@@ -72,8 +74,8 @@ async def safe_edit(msg: Message, text: str, reply_markup=None) -> None:
 # Boot up Aria2 Daemon
 # ---------------------------------------------------------------------------
 def start_aria2_daemon() -> None:
-    """Start aria2c daemon with optimized settings."""
-    print("[aria2] Starting daemon...")
+    """Start aria2c daemon with MAX SPEED settings for Heroku."""
+    print("[aria2] Starting daemon with MAX SPEED settings...")
     # Ensure download directory exists with absolute path
     download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
     os.makedirs(download_dir, exist_ok=True)
@@ -87,26 +89,50 @@ def start_aria2_daemon() -> None:
             "--rpc-listen-port=6800",
             "--daemon=true",
             f"--dir={download_dir}",
+            # MAX SPEED SETTINGS - No limits
             "--max-overall-download-limit=0",
             "--max-overall-upload-limit=0",
+            "--max-download-limit=0",
+            "--max-upload-limit=0",
+            # MAX CONNECTIONS for speed
+            "--max-connection-per-server=32",
+            "--split=32",
+            "--min-split-size=1M",
+            "--max-concurrent-downloads=10",
+            # Performance optimizations
             "--disable-ipv6=true",
-            "--disk-cache=128M",
+            "--disk-cache=256M",
             "--file-allocation=none",
-            "--max-connection-per-server=16",
-            "--split=16",
-            "--min-split-size=10M",
-            "--max-concurrent-downloads=5",
-            "--timeout=600",
-            "--max-tries=10",
-            "--retry-wait=5",
+            "--optimize-concurrent-downloads=true",
+            # Connection reliability
+            "--timeout=300",
+            "--max-tries=20",
+            "--retry-wait=3",
+            "--connect-timeout=60",
+            "--max-file-not-found=10",
+            # BitTorrent optimizations
             "--seed-time=0",
-            "--bt-stop-timeout=600",
-            "--max-overall-upload-limit=1K",
+            "--bt-stop-timeout=300",
+            "--bt-max-peers=200",
+            "--bt-request-peer-speed-limit=0",
+            "--bt-hash-check-seed=false",
+            "--bt-seed-unverified=false",
+            "--bt-save-metadata=true",
+            "--dht-listen-port=6881-6999",
+            "--enable-dht=true",
+            "--enable-dht6=false",
+            "--enable-peer-exchange=true",
+            # HTTP/FTP optimizations
+            "--http-accept-gzip=true",
+            "--http-no-cache=true",
+            "--reuse-uri=true",
+            # Logging
             "--console-log-level=warn",
-            "--summary-interval=0"
+            "--summary-interval=0",
+            "--download-result=hide"
         ])
         time.sleep(3)
-        print("[aria2] Daemon started successfully")
+        print("[aria2] Daemon started successfully with MAX SPEED settings")
     except Exception as e:
         print(f"[aria2] Failed to start daemon: {e}")
 
@@ -143,21 +169,19 @@ async def cancel_callback(client: Client, callback_query: CallbackQuery) -> None
 @app.on_message(filters.command("start"))
 async def start_handler(client: Client, message: Message) -> None:
     """Handle /start command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        await message.reply_text("⛔️ **Access Denied:** You are not authorized to use this bot.")
-        return
-        
+    user_id = message.from_user.id
     welcome_text = (
         "🚀 **TG Leecher Bot (Aria2 Powered)**\n\n"
         "Send me any downloadable link, magnet link, or upload a **.torrent** file!\n\n"
         "**✨ Features:**\n"
         "• Direct links, magnets, torrent files support\n"
         "• Auto-splits files **> 1.9 GB** natively\n"
-        "• High-speed download & upload\n"
+        "• 🚀 **MAX SPEED** download & upload\n"
         "• Real-time progress tracking\n\n"
         "**🔧 Commands:**\n"
         "`/status` - Check bot status & disk space\n"
         "`/cancel` - Cancel active download\n"
+        "`/setid <telegram_id>` - Set your Telegram ID for web uploads\n"
         "`/setdump <channel_id>` - Set dump channel\n"
         "`/setcaption <text>` - Set custom caption\n"
         "`/setthumb` (reply to image) - Set thumbnail\n"
@@ -169,9 +193,6 @@ async def start_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("help"))
 async def help_handler(client: Client, message: Message) -> None:
     """Handle /help command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-        
     help_text = (
         "**📖 How to Use:**\n\n"
         "1️⃣ **Send a link:** Paste any direct URL or magnet link\n"
@@ -182,6 +203,7 @@ async def help_handler(client: Client, message: Message) -> None:
         "• `/start` - Show welcome message\n"
         "• `/status` - Check bot status and disk space\n"
         "• `/cancel` - Cancel your active download\n"
+        "• `/setid <telegram_id>` - Set your Telegram ID for web uploads\n"
         "• `/setdump <channel_id>` - Set channel for auto-uploads\n"
         "• `/setcaption <text>` - Add custom caption to uploads\n"
         "• `/setthumb` (reply to image) - Set thumbnail\n"
@@ -189,7 +211,8 @@ async def help_handler(client: Client, message: Message) -> None:
         "**💡 Tips:**\n"
         "• Files larger than 1.9GB are automatically split\n"
         "• Use the Web UI for a visual experience\n"
-        "• Set a dump channel to auto-upload files there"
+        "• Set a dump channel to auto-upload files there\n"
+        "• 🚀 MAX SPEED optimized for Heroku hosting"
     )
     await message.reply_text(help_text, parse_mode=enums.ParseMode.MARKDOWN)
 
@@ -197,9 +220,6 @@ async def help_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("setdump"))
 async def setdump_handler(client: Client, message: Message) -> None:
     """Handle /setdump command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-        
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.reply_text(
@@ -218,9 +238,6 @@ async def setdump_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("setcaption"))
 async def setcaption_handler(client: Client, message: Message) -> None:
     """Handle /setcaption command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-        
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         set_custom_caption(message.from_user.id, "")
@@ -234,9 +251,6 @@ async def setcaption_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("setthumb"))
 async def setthumb_handler(client: Client, message: Message) -> None:
     """Handle /setthumb command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-        
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.reply_text("❌ **Reply to a photo** with `/setthumb` to set it as thumbnail.")
         return
@@ -246,12 +260,45 @@ async def setthumb_handler(client: Client, message: Message) -> None:
     await message.reply_text("✅ **Custom thumbnail saved!**")
 
 
+@app.on_message(filters.command("setid"))
+async def setid_handler(client: Client, message: Message) -> None:
+    """Handle /setid command - Set Telegram ID for web uploads."""
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        current_id = get_user_telegram_id(message.from_user.id)
+        if current_id:
+            await message.reply_text(
+                f"📱 **Your current Telegram ID:** `{current_id}`\n\n"
+                f"Web uploads will be sent to this ID.\n\n"
+                f"**To change:** `/setid <your_telegram_id>`\n"
+                f"**To remove:** `/setid 0`"
+            )
+        else:
+            await message.reply_text(
+                "📱 **Set your Telegram ID for Web UI uploads**\n\n"
+                "When you use the Web UI, files will be sent to this Telegram ID.\n\n"
+                "**Usage:** `/setid <your_telegram_id>`\n\n"
+                "💡 **Get your ID:** Forward a message from yourself to @userinfobot"
+            )
+        return
+    try:
+        telegram_id = int(parts[1])
+        if telegram_id == 0:
+            set_user_telegram_id(message.from_user.id, 0)
+            await message.reply_text("✅ **Telegram ID removed.** Web uploads will go to your chat ID.")
+        else:
+            set_user_telegram_id(message.from_user.id, telegram_id)
+            await message.reply_text(
+                f"✅ **Telegram ID set to:** `{telegram_id}`\n\n"
+                f"📤 Files downloaded from Web UI will be sent to this ID."
+            )
+    except ValueError:
+        await message.reply_text("❌ **Invalid ID.** Please provide a valid number.")
+
+
 @app.on_message(filters.command("status"))
 async def status_handler(client: Client, message: Message) -> None:
     """Handle /status command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-    
     active_count = len(_active_downloads)
     download_dir = settings.DOWNLOAD_DIR
     
@@ -267,7 +314,8 @@ async def status_handler(client: Client, message: Message) -> None:
         "📊 **Bot Status**\n\n"
         f"⬇️ Active Downloads: `{active_count}`\n"
         f"📁 Download Dir: `{download_dir}`\n"
-        f"{disk_info}\n\n"
+        f"{disk_info}\n"
+        f"🚀 **MAX SPEED Mode Enabled**\n\n"
         f"✅ Bot is running normally"
     )
     await message.reply_text(status_text, parse_mode=enums.ParseMode.MARKDOWN)
@@ -276,9 +324,6 @@ async def status_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.command("cancel"))
 async def cancel_cmd_handler(client: Client, message: Message) -> None:
     """Handle /cancel command."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-    
     # Find active download for this user
     user_active = None
     for msg_id, entry in _active_downloads.items():
@@ -308,9 +353,6 @@ async def cancel_cmd_handler(client: Client, message: Message) -> None:
 @app.on_message(filters.document)
 async def torrent_handler(client: Client, message: Message) -> None:
     """Handle torrent file uploads."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-    
     # Check if it's a torrent file
     if not message.document or not message.document.file_name:
         return
@@ -460,13 +502,15 @@ async def process_download(client: Client, message: Message, url: str, status: M
                 
             caption = "\n".join(caption_lines)
 
-            # Upload as document
+            # Upload as document with MAX SPEED settings
             send_kwargs = {
                 "chat_id": target_chat_id,
                 "document": part,
                 "caption": caption,
                 "parse_mode": enums.ParseMode.MARKDOWN,
                 "progress": up_progress,
+                "force_document": True,  # Force as document for speed
+                "disable_notification": True,  # Reduce overhead
             }
             
             if target_chat_id == message.chat.id:
@@ -475,11 +519,22 @@ async def process_download(client: Client, message: Message, url: str, status: M
             if thumb_path and os.path.exists(thumb_path):
                 send_kwargs["thumb"] = thumb_path
 
-            await client.send_document(**send_kwargs)
+            # Upload with timeout and retry logic for max speed
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await client.send_document(**send_kwargs)
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"[upload] Retry {attempt + 1}/{max_retries} for {part_name}: {e}")
+                        await asyncio.sleep(1)
+                    else:
+                        raise
 
-            # Anti-ban delay between parts
+            # Minimal delay between parts for max speed
             if idx < total_parts:
-                await asyncio.sleep(random.uniform(1.0, 2.5))
+                await asyncio.sleep(0.5)
 
         await safe_edit(status, "✅ **Upload complete!** 🎉")
 
@@ -517,9 +572,6 @@ async def process_download(client: Client, message: Message, url: str, status: M
 @app.on_message(filters.text & filters.regex(r"(https?://\S+|magnet:\?xt=urn:btih:\S+)"))
 async def leech_handler(client: Client, message: Message) -> None:
     """Handle download URLs and upload files to Telegram."""
-    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
-        return
-        
     url = message.text.strip()
     status = await message.reply_text(
         "🔍 **Initializing download...**",
@@ -558,7 +610,7 @@ async def health_check(request):
     })
 
 
-async def web_download_task(ws, url: str, cleanup_torrent: str = None):
+async def web_download_task(ws, url: str, user_id: int = None, cleanup_torrent: str = None):
     """Handle download from Web UI via WebSocket."""
     filepath = None
     file_parts = []
@@ -646,12 +698,16 @@ async def web_download_task(ws, url: str, cleanup_torrent: str = None):
         file_parts = await split_large_file(filepath)
         total_parts = len(file_parts)
 
-        # Upload - check OWNER_ID properly
-        target_chat_id = settings.OWNER_ID
+        # Upload - Get target chat ID from user settings or use default
+        if user_id:
+            target_chat_id = get_web_upload_target(user_id)
+        else:
+            target_chat_id = settings.OWNER_ID if settings.OWNER_ID else None
+        
         if not target_chat_id or target_chat_id == 0:
             await send_with_ping({
                 "status": "error",
-                "message": "OWNER_ID not configured. Please set OWNER_ID in environment variables."
+                "message": "No target Telegram ID configured. Use /setid command in bot to set your ID."
             })
             heartbeat_task.cancel()
             return
@@ -662,7 +718,7 @@ async def web_download_task(ws, url: str, cleanup_torrent: str = None):
         except Exception as e:
             await send_with_ping({
                 "status": "error",
-                "message": f"Cannot access OWNER_ID {target_chat_id}. Make sure you've started the bot. Error: {str(e)[:100]}"
+                "message": f"Cannot access user {target_chat_id}. Make sure you've started the bot. Error: {str(e)[:100]}"
             })
             heartbeat_task.cancel()
             return
@@ -676,19 +732,33 @@ async def web_download_task(ws, url: str, cleanup_torrent: str = None):
                 "total_parts": total_parts
             })
 
-            await app.send_document(
-                chat_id=target_chat_id,
-                document=part,
-                caption=f"📤 Uploaded via Web UI\n📁 {os.path.basename(part)}"
-            )
+            # Upload with MAX SPEED settings
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await app.send_document(
+                        chat_id=target_chat_id,
+                        document=part,
+                        caption=f"📤 Uploaded via Web UI\n📁 {os.path.basename(part)}",
+                        force_document=True,
+                        disable_notification=True
+                    )
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)
+                    else:
+                        raise
 
+            # Minimal delay between parts for max speed
             if idx < total_parts:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
 
         await send_with_ping({
             "status": "completed",
-            "message": "Successfully uploaded to Telegram!",
-            "percentage": 100
+            "message": f"Successfully uploaded to Telegram! (User ID: {target_chat_id})",
+            "percentage": 100,
+            "target_id": target_chat_id
         })
 
         heartbeat_task.cancel()
@@ -746,9 +816,10 @@ async def websocket_handler(request):
                     url = data.get("url")
                     torrent_data = data.get("torrent_data")  # Base64 encoded torrent
                     torrent_name = data.get("torrent_name")
+                    user_id = data.get("user_id")  # User's Telegram ID for uploads
 
                     if url:
-                        asyncio.create_task(web_download_task(ws, url))
+                        asyncio.create_task(web_download_task(ws, url, user_id=user_id))
                     elif torrent_data and torrent_name:
                         # Handle torrent file upload
                         import base64
@@ -762,7 +833,7 @@ async def websocket_handler(request):
 
                             # Process as file:// URL
                             file_url = f"file://{os.path.abspath(torrent_path)}"
-                            asyncio.create_task(web_download_task(ws, file_url, cleanup_torrent=torrent_path))
+                            asyncio.create_task(web_download_task(ws, file_url, user_id=user_id, cleanup_torrent=torrent_path))
                         except Exception as e:
                             await ws.send_json({"status": "error", "message": f"Failed to process torrent: {str(e)}"})
                     else:

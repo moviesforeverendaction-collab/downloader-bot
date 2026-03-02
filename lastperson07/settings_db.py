@@ -104,5 +104,21 @@ def set_custom_thumb(user_id: int, thumb_file_id: str) -> None:
     set_user_setting(user_id, "custom_thumb", thumb_file_id)
 
 
+def get_user_telegram_id(user_id: int):
+    """Get user's configured Telegram ID for receiving downloads."""
+    return get_user_setting(user_id, "telegram_id")
+
+
+def set_user_telegram_id(user_id: int, telegram_id: int) -> None:
+    """Set user's Telegram ID for receiving downloads."""
+    set_user_setting(user_id, "telegram_id", telegram_id)
+
+
+def get_web_upload_target(user_id: int):
+    """Get the target chat ID for web uploads. Returns user's set ID or user_id."""
+    configured_id = get_user_setting(user_id, "telegram_id")
+    return configured_id if configured_id else user_id
+
+
 # Ensure download dir exists on import
 os.makedirs(settings.DOWNLOAD_DIR, exist_ok=True)

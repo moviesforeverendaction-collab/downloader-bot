@@ -70,16 +70,20 @@ async def aria2_rpc(method: str, params: list) -> Optional[Any]:
 async def add_download(uri: str, download_dir: str) -> Optional[str]:
     """
     Add a URI or magnet to aria2c and return its GID.
-    
+
     Args:
         uri: Download URL or magnet link
         download_dir: Directory for downloads
-        
+
     Returns:
         GID string or None on failure
     """
+    # Ensure absolute path for download directory
+    abs_download_dir = os.path.abspath(download_dir)
+    os.makedirs(abs_download_dir, exist_ok=True)
+
     options = {
-        "dir": download_dir,
+        "dir": abs_download_dir,
         "seed-time": "0",
         "continue": "true",
         "allow-overwrite": "true",
@@ -87,13 +91,13 @@ async def add_download(uri: str, download_dir: str) -> Optional[str]:
         "max-tries": "10",
         "retry-wait": "5",
     }
-    
-    if uri.startswith(("http://", "https://", "ftp://", "magnet:")):
+
+    if uri.startswith(("http://", "https://", "ftp://", "magnet:", "file://")):
         gid = await aria2_rpc("aria2.addUri", [[uri], options])
         if gid:
-            print(f"[aria2] Added download with GID: {gid}")
+            print(f"[aria2] Added download with GID: {gid} to dir: {abs_download_dir}")
         return gid
-    
+
     print(f"[aria2] Unsupported URI scheme: {uri[:50]}...")
     return None
 
@@ -135,6 +139,9 @@ def _resolve_path(raw_path: str, aria2_dir: Optional[str] = None) -> Optional[st
     if not raw_path:
         return None
 
+    # Get absolute download directory
+    download_dir_abs = os.path.abspath(settings.DOWNLOAD_DIR)
+
     # Strategy 1: Try as-is (absolute or relative to CWD)
     abs_p = os.path.abspath(raw_path)
     if os.path.exists(abs_p):
@@ -160,30 +167,44 @@ def _resolve_path(raw_path: str, aria2_dir: Optional[str] = None) -> Optional[st
     prefixes = [
         "downloads/",
         "DOWNLOADS/",
-        settings.DOWNLOAD_DIR.lstrip("./").rstrip("/") + "/"
+        "/tmp/downloads/",
+        "/downloads/",
+        download_dir_abs.rstrip("/") + "/"
     ]
     for p in prefixes:
         if clean.startswith(p):
             clean = clean[len(p):]
             break
 
-    candidate = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, clean))
+    candidate = os.path.abspath(os.path.join(download_dir_abs, clean))
     if os.path.exists(candidate):
         return candidate
 
     # Strategy 4: Check if basename exists in DOWNLOAD_DIR
-    base_candidate = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, os.path.basename(raw_path)))
+    base_candidate = os.path.abspath(os.path.join(download_dir_abs, os.path.basename(raw_path)))
     if os.path.exists(base_candidate):
         return base_candidate
 
     # Strategy 5: Search for file by basename in DOWNLOAD_DIR (handles encoding issues)
     try:
         basename = os.path.basename(raw_path)
-        for entry in os.listdir(settings.DOWNLOAD_DIR):
+        for entry in os.listdir(download_dir_abs):
             if entry == basename:
-                full_path = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, entry))
+                full_path = os.path.abspath(os.path.join(download_dir_abs, entry))
                 if os.path.exists(full_path):
                     return full_path
+    except (OSError, IOError):
+        pass
+
+    # Strategy 6: Search recursively in DOWNLOAD_DIR (for torrent subdirectories)
+    try:
+        basename = os.path.basename(raw_path)
+        for root, dirs, files in os.walk(download_dir_abs):
+            for filename in files:
+                if filename == basename:
+                    full_path = os.path.abspath(os.path.join(root, filename))
+                    if os.path.exists(full_path):
+                        return full_path
     except (OSError, IOError):
         pass
 

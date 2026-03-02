@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import asyncio
 import random
@@ -169,8 +170,8 @@ async def leech_handler(client, message):
             return
 
         async def dl_progress(action, current, total, t0, speed=0, eta_seconds=0):
-            # Using our local utils format_progress
-            await safe_edit(status, format_progress(current, total, t0, action))
+            # Pass aria2-reported speed & ETA straight into format_progress
+            await safe_edit(status, format_progress(current, total, t0, action, speed=speed, eta_seconds=eta_seconds))
 
         await safe_edit(status, "⬇️ **Downloading...**")
         start_time = time.time()
@@ -282,7 +283,6 @@ async def leech_handler(client, message):
             pass
 
 
-import json
 
 # ---------------------------------------------------------------------------
 # Dummy web server — keeps Render/Heroku alive & Serves Web UI
@@ -294,7 +294,10 @@ async def ping_server():
         if settings.SELF_PING_URL:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(settings.SELF_PING_URL, timeout=10) as response:
+                    async with session.get(
+                        settings.SELF_PING_URL,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as response:
                         print(f"Self-ping status: {response.status}")
             except Exception as e:
                 print(f"Self-ping failed: {e}")
@@ -386,16 +389,18 @@ async def websocket_handler(request):
 async def start_web_server():
     web_app = web.Application()
     
-    if os.path.exists("static"):
+    # Resolve static directory relative to this file (works in Docker too)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _static_dir = os.path.join(_here, "static")
+    if os.path.exists(_static_dir):
         async def serve_index(request):
-            index_path = os.path.join("static", "index.html")
+            index_path = os.path.join(_static_dir, "index.html")
             if os.path.exists(index_path):
                 return web.FileResponse(index_path)
             return web.Response(text="Static folder found, but no index.html present.")
             
         web_app.router.add_get("/", serve_index)
-        # We mount static directory on `/static` so it doesn't conflict with `/`
-        web_app.router.add_static("/static", "static")
+        web_app.router.add_static("/static", _static_dir)
     else:
         web_app.router.add_get("/", health_check)
         

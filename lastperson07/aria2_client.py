@@ -29,18 +29,12 @@ async def add_download(uri: str, download_dir: str):
     """Add a URI (HTTP/HTTPS/FTP/Magnet) or Torrent to aria2c."""
     options = {
         "dir": download_dir,
-        "max-connection-per-server": "32",
-        "split": "32",
+        "max-connection-per-server": "16",
+        "split": "16",
         "min-split-size": "1M",
-        "piece-length": "1M",
         "seed-time": "0",
-        "max-overall-download-limit": "0",
-        "max-overall-upload-limit": "0",
         "continue": "true",
-        "allow-overwrite": "true",
-        "disable-ipv6": "true",
-        "disk-cache": "64M",
-        "enable-mmap": "true"
+        "allow-overwrite": "true"
     }
     
     # If it's a direct magnet or web link

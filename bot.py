@@ -58,7 +58,12 @@ def start_aria2_daemon():
         "--enable-rpc",
         "--rpc-listen-all=false",
         "--rpc-listen-port=6800",
-        "--daemon=true"
+        "--daemon=true",
+        "--max-overall-download-limit=0",
+        "--max-overall-upload-limit=0",
+        "--disable-ipv6=true",
+        "--disk-cache=64M",
+        "--file-allocation=none"
     ])
     time.sleep(2)  # Give it a moment to boot
 

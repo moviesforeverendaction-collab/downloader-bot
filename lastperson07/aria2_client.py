@@ -29,9 +29,6 @@ async def add_download(uri: str, download_dir: str):
     """Add a URI (HTTP/HTTPS/FTP/Magnet) or Torrent to aria2c."""
     options = {
         "dir": download_dir,
-        "max-connection-per-server": "16",
-        "split": "16",
-        "min-split-size": "1M",
         "seed-time": "0",
         "continue": "true",
         "allow-overwrite": "true"
@@ -104,6 +101,13 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
                 downloaded_file = largest_file
                 if not downloaded_file:
                     downloaded_file = files[0].get("path")
+
+            # Aria2 allocating/verifying pieces can take time.
+            # We must wait until the .aria2 tracking file is gone before it is truly "done"
+            if downloaded_file and os.path.exists(downloaded_file + ".aria2"):
+                await progress_callback(action, completed_len, total_len, start_time, speed, eta_seconds=0)
+                await asyncio.sleep(2)
+                continue
             
             # Since we manually force finish if active & 100%, we should remove the task
             if status == "active":

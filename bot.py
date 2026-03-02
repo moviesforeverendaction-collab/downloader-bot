@@ -63,7 +63,10 @@ def start_aria2_daemon():
         "--max-overall-upload-limit=0",
         "--disable-ipv6=true",
         "--disk-cache=64M",
-        "--file-allocation=none"
+        "--file-allocation=none",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M"
     ])
     time.sleep(2)  # Give it a moment to boot
 

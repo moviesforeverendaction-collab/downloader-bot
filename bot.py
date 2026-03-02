@@ -74,11 +74,6 @@ async def safe_edit(msg: Message, text: str, reply_markup=None) -> None:
 def start_aria2_daemon() -> None:
     """Start aria2c daemon with optimized settings."""
     print("[aria2] Starting daemon...")
-    # Ensure download directory exists with absolute path
-    download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
-    os.makedirs(download_dir, exist_ok=True)
-    print(f"[aria2] Download directory: {download_dir}")
-
     try:
         subprocess.Popen([
             "aria2c",
@@ -86,7 +81,6 @@ def start_aria2_daemon() -> None:
             "--rpc-listen-all=false",
             "--rpc-listen-port=6800",
             "--daemon=true",
-            f"--dir={download_dir}",
             "--max-overall-download-limit=0",
             "--max-overall-upload-limit=0",
             "--disable-ipv6=true",
@@ -101,9 +95,7 @@ def start_aria2_daemon() -> None:
             "--retry-wait=5",
             "--seed-time=0",
             "--bt-stop-timeout=600",
-            "--max-overall-upload-limit=1K",
-            "--console-log-level=warn",
-            "--summary-interval=0"
+            "--max-overall-upload-limit=1K"
         ])
         time.sleep(3)
         print("[aria2] Daemon started successfully")
@@ -324,18 +316,24 @@ async def torrent_handler(client: Client, message: Message) -> None:
     )
     
     try:
-        # Download the torrent file
-        torrent_path = await client.download_media(message.document)
+        # Download the torrent file to absolute path
+        download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+        os.makedirs(download_dir, exist_ok=True)
+        
+        torrent_path = await client.download_media(message.document, file_name=download_dir)
         if not torrent_path:
             await safe_edit(status, "❌ **Failed to download torrent file.**")
             return
         
+        # Ensure absolute path
+        torrent_path = os.path.abspath(torrent_path)
+        print(f"[torrent] Saved torrent to: {torrent_path}")
+        
         # Convert to magnet or use as-is with aria2
-        # For torrent files, we'll use the file path directly
         await safe_edit(status, "🔍 **Processing torrent...**")
         
         # Create a file:// URL for the torrent
-        torrent_url = f"file://{os.path.abspath(torrent_path)}"
+        torrent_url = f"file://{torrent_path}"
         
         # Now process as a regular download
         await process_download(client, message, torrent_url, status)
@@ -344,6 +342,7 @@ async def torrent_handler(client: Client, message: Message) -> None:
         try:
             if os.path.exists(torrent_path):
                 os.remove(torrent_path)
+                print(f"[torrent] Cleaned up: {torrent_path}")
         except Exception:
             pass
             
@@ -370,8 +369,13 @@ async def process_download(client: Client, message: Message, url: str, status: M
     filepath = None
 
     try:
+        # Use absolute path for download directory
+        download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+        os.makedirs(download_dir, exist_ok=True)
+        print(f"[process_download] Using download dir: {download_dir}")
+        
         # 1. Add download to Aria2
-        gid = await add_download(url, settings.DOWNLOAD_DIR)
+        gid = await add_download(url, download_dir)
         if not gid:
             await safe_edit(status, "❌ **Failed to add download.** Aria2 might be busy.")
             return
@@ -406,6 +410,8 @@ async def process_download(client: Client, message: Message, url: str, status: M
             return
             
         filepath = result
+        print(f"[process_download] Download complete: {filepath}")
+        
         if not filepath or not os.path.exists(filepath):
             await safe_edit(status, "❌ **Error:** Download completed but file not found.")
             _active_downloads.pop(status.id, None)
@@ -425,6 +431,7 @@ async def process_download(client: Client, message: Message, url: str, status: M
         if custom_thumb_id:
             try:
                 thumb_path = await client.download_media(custom_thumb_id)
+                thumb_path = os.path.abspath(thumb_path) if thumb_path else None
             except Exception as e:
                 print(f"[thumb] Failed to download thumbnail: {e}")
 
@@ -488,6 +495,8 @@ async def process_download(client: Client, message: Message, url: str, status: M
 
     except Exception as exc:
         print(f"[process_download] Error: {exc}")
+        import traceback
+        traceback.print_exc()
         await safe_edit(status, f"❌ **Error:** `{str(exc)[:200]}`")
 
     finally:
@@ -554,65 +563,73 @@ async def health_check(request):
     return web.json_response({
         "status": "ok",
         "service": "TG Leecher",
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "download_dir": settings.DOWNLOAD_DIR
     })
+
+
+async def list_downloads(request):
+    """List files in the download directory."""
+    try:
+        download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+        files = []
+        
+        if os.path.exists(download_dir):
+            for entry in os.listdir(download_dir):
+                full_path = os.path.join(download_dir, entry)
+                if os.path.isfile(full_path):
+                    stat = os.stat(full_path)
+                    files.append({
+                        "name": entry,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime
+                    })
+        
+        # Sort by modified time, newest first
+        files.sort(key=lambda x: x["modified"], reverse=True)
+        
+        return web.json_response({
+            "status": "ok",
+            "files": files[:20],  # Limit to 20 most recent
+            "total": len(files)
+        })
+    except Exception as e:
+        return web.json_response({
+            "status": "error",
+            "message": str(e)
+        }, status=500)
 
 
 async def web_download_task(ws, url: str, cleanup_torrent: str = None):
     """Handle download from Web UI via WebSocket."""
     filepath = None
     file_parts = []
-
-    # Track last ping time for heartbeat
-    last_ping_time = [time.time()]
-    HEARTBEAT_INTERVAL = 15  # Send ping every 15 seconds to keep connection alive
-
-    async def send_with_ping(data: dict):
-        """Send data with heartbeat check."""
-        try:
-            await ws.send_json(data)
-            last_ping_time[0] = time.time()
-        except Exception as e:
-            raise ConnectionError(f"Failed to send to WebSocket: {e}")
-
-    async def heartbeat_checker():
-        """Send periodic pings to keep WebSocket alive."""
-        while True:
-            await asyncio.sleep(HEARTBEAT_INTERVAL)
-            try:
-                # Check if connection is still open
-                if ws.closed:
-                    break
-                # Send a ping message
-                await ws.send_json({"type": "ping", "timestamp": time.time()})
-            except Exception:
-                break
-
+    
     try:
-        # Start heartbeat task
-        heartbeat_task = asyncio.create_task(heartbeat_checker())
-
-        await send_with_ping({
+        await ws.send_json({
             "status": "initializing",
             "message": "Adding to Aria2...",
             "percentage": 0
         })
-
-        gid = await add_download(url, settings.DOWNLOAD_DIR)
+        
+        # Use absolute path for download directory
+        download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+        print(f"[web_download] Using download dir: {download_dir}")
+        
+        gid = await add_download(url, download_dir)
         if not gid:
-            await send_with_ping({
+            await ws.send_json({
                 "status": "error",
                 "message": "Failed to add download to Aria2"
             })
-            heartbeat_task.cancel()
             return
-
+            
         start_time = time.time()
-
+        
         async def ws_progress(action: str, current: int, total: int, t0: float, speed: float = 0, eta_seconds: float = 0):
             percent = int((current / total) * 100) if total > 0 else 0
             try:
-                await send_with_ping({
+                await ws.send_json({
                     "status": action.lower(),
                     "message": action,
                     "percentage": percent,
@@ -623,80 +640,66 @@ async def web_download_task(ws, url: str, cleanup_torrent: str = None):
                 })
             except Exception:
                 pass
-
+                
         success, result = await monitor_download(gid, ws_progress, start_time)
-
+        
         if not success:
-            await send_with_ping({
+            await ws.send_json({
                 "status": "error",
                 "message": f"Download failed: {result}"
             })
-            heartbeat_task.cancel()
             return
-
+            
         filepath = result
-
-        await send_with_ping({
+        print(f"[web_download] Download complete: {filepath}")
+        
+        await ws.send_json({
             "status": "processing",
             "message": "Splitting large files if needed...",
             "percentage": 100
         })
-
+        
         # Split file if needed
         file_parts = await split_large_file(filepath)
         total_parts = len(file_parts)
-
-        # Upload - check OWNER_ID properly
+        
+        # Upload
         target_chat_id = settings.OWNER_ID
-        if not target_chat_id or target_chat_id == 0:
-            await send_with_ping({
+        if not target_chat_id:
+            await ws.send_json({
                 "status": "error",
-                "message": "OWNER_ID not configured. Please set OWNER_ID in environment variables."
+                "message": "OWNER_ID not configured. Cannot upload."
             })
-            heartbeat_task.cancel()
             return
-
-        # Verify the bot can send messages to this user
-        try:
-            await app.get_users(target_chat_id)
-        except Exception as e:
-            await send_with_ping({
-                "status": "error",
-                "message": f"Cannot access OWNER_ID {target_chat_id}. Make sure you've started the bot. Error: {str(e)[:100]}"
-            })
-            heartbeat_task.cancel()
-            return
-
+            
         for idx, part in enumerate(file_parts, start=1):
-            await send_with_ping({
+            await ws.send_json({
                 "status": "uploading",
                 "message": f"Uploading part {idx}/{total_parts}..." if total_parts > 1 else "Uploading...",
                 "percentage": 100,
                 "part": idx,
                 "total_parts": total_parts
             })
-
+            
             await app.send_document(
                 chat_id=target_chat_id,
                 document=part,
                 caption=f"📤 Uploaded via Web UI\n📁 {os.path.basename(part)}"
             )
-
+            
             if idx < total_parts:
                 await asyncio.sleep(1)
-
-        await send_with_ping({
+        
+        await ws.send_json({
             "status": "completed",
             "message": "Successfully uploaded to Telegram!",
             "percentage": 100
         })
-
-        heartbeat_task.cancel()
-
-    except ConnectionError:
-        print("[web_download] WebSocket connection lost")
+        
     except Exception as e:
         print(f"[web_download] Error: {e}")
+        import traceback
+        traceback.print_exc()
         try:
             await ws.send_json({
                 "status": "error",
@@ -722,64 +725,55 @@ async def web_download_task(ws, url: str, cleanup_torrent: str = None):
 
 async def websocket_handler(request):
     """WebSocket handler for real-time updates."""
-    ws = web.WebSocketResponse(
-        max_msg_size=10*1024*1024,  # 10MB max for torrent files
-        heartbeat=30.0,  # Send ping frame every 30 seconds to keep connection alive
-        autoping=True,   # Automatically respond to ping frames
-    )
+    ws = web.WebSocketResponse(max_msg_size=10*1024*1024)  # 10MB max for torrent files
     await ws.prepare(request)
-
+    
     print(f"[ws] New WebSocket connection from {request.remote}")
-
-    try:
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                try:
-                    data = json.loads(msg.data)
-                    msg_type = data.get("type")
-
-                    # Handle client ping messages
-                    if msg_type == "ping":
-                        await ws.send_json({"type": "pong", "timestamp": data.get("timestamp")})
-                        continue
-
-                    url = data.get("url")
-                    torrent_data = data.get("torrent_data")  # Base64 encoded torrent
-                    torrent_name = data.get("torrent_name")
-
-                    if url:
-                        asyncio.create_task(web_download_task(ws, url))
-                    elif torrent_data and torrent_name:
-                        # Handle torrent file upload
-                        import base64
-                        try:
-                            torrent_bytes = base64.b64decode(torrent_data)
-                            torrent_path = os.path.join(settings.DOWNLOAD_DIR, torrent_name)
-
-                            # Save torrent file
-                            with open(torrent_path, 'wb') as f:
-                                f.write(torrent_bytes)
-
-                            # Process as file:// URL
-                            file_url = f"file://{os.path.abspath(torrent_path)}"
-                            asyncio.create_task(web_download_task(ws, file_url, cleanup_torrent=torrent_path))
-                        except Exception as e:
-                            await ws.send_json({"status": "error", "message": f"Failed to process torrent: {str(e)}"})
-                    else:
-                        await ws.send_json({"status": "error", "message": "No URL or torrent provided"})
-
-                except json.JSONDecodeError:
-                    await ws.send_json({"status": "error", "message": "Invalid JSON"})
-                except Exception as e:
-                    await ws.send_json({"status": "error", "message": str(e)})
-            elif msg.type == web.WSMsgType.ERROR:
-                print(f"[ws] WebSocket error: {ws.exception()}")
-                break
-    except Exception as e:
-        print(f"[ws] WebSocket handler error: {e}")
-    finally:
-        print(f"[ws] WebSocket connection closed")
-
+    
+    async for msg in ws:
+        if msg.type == web.WSMsgType.TEXT:
+            try:
+                data = json.loads(msg.data)
+                url = data.get("url")
+                torrent_data = data.get("torrent_data")  # Base64 encoded torrent
+                torrent_name = data.get("torrent_name")
+                
+                if url:
+                    print(f"[ws] Received URL: {url[:50]}...")
+                    asyncio.create_task(web_download_task(ws, url))
+                elif torrent_data and torrent_name:
+                    # Handle torrent file upload
+                    import base64
+                    try:
+                        torrent_bytes = base64.b64decode(torrent_data)
+                        # Use absolute path for download directory
+                        download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+                        torrent_path = os.path.join(download_dir, torrent_name)
+                        
+                        print(f"[ws] Saving torrent file: {torrent_path}")
+                        
+                        # Save torrent file
+                        with open(torrent_path, 'wb') as f:
+                            f.write(torrent_bytes)
+                        
+                        # Process as file:// URL
+                        file_url = f"file://{torrent_path}"
+                        asyncio.create_task(web_download_task(ws, file_url, cleanup_torrent=torrent_path))
+                    except Exception as e:
+                        print(f"[ws] Torrent processing error: {e}")
+                        await ws.send_json({"status": "error", "message": f"Failed to process torrent: {str(e)}"})
+                else:
+                    await ws.send_json({"status": "error", "message": "No URL or torrent provided"})
+                    
+            except json.JSONDecodeError:
+                await ws.send_json({"status": "error", "message": "Invalid JSON"})
+            except Exception as e:
+                print(f"[ws] Error: {e}")
+                await ws.send_json({"status": "error", "message": str(e)})
+        elif msg.type == web.WSMsgType.ERROR:
+            print(f"[ws] WebSocket error: {ws.exception()}")
+    
+    print(f"[ws] WebSocket connection closed")
     return ws
 
 
@@ -789,6 +783,9 @@ async def start_web_server():
     
     _here = os.path.dirname(os.path.abspath(__file__))
     _static_dir = os.path.join(_here, "static")
+    
+    print(f"[web] Static directory: {_static_dir}")
+    print(f"[web] Static dir exists: {os.path.exists(_static_dir)}")
     
     if os.path.exists(_static_dir):
         async def serve_index(request):
@@ -803,12 +800,15 @@ async def start_web_server():
         web_app.router.add_get("/", health_check)
         
     web_app.router.add_get("/health", health_check)
+    web_app.router.add_get("/api/downloads", list_downloads)
     web_app.router.add_get("/ws", websocket_handler)
         
     runner = web.AppRunner(web_app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", settings.PORT).start()
     print(f"[web] Server started on port {settings.PORT}")
+    print(f"[web] Health check: http://localhost:{settings.PORT}/health")
+    print(f"[web] WebSocket: ws://localhost:{settings.PORT}/ws")
     
     asyncio.create_task(ping_server())
 

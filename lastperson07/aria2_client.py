@@ -10,6 +10,7 @@ Features:
   • Stall detection and auto-recovery
   • Support for both single files and torrent directories
   • Proper error handling and cleanup
+  • Absolute path handling for container environments (Render, Heroku)
 """
 
 import aiohttp
@@ -70,18 +71,18 @@ async def aria2_rpc(method: str, params: list) -> Optional[Any]:
 async def add_download(uri: str, download_dir: str) -> Optional[str]:
     """
     Add a URI or magnet to aria2c and return its GID.
-
+    
     Args:
-        uri: Download URL or magnet link
-        download_dir: Directory for downloads
-
+        uri: Download URL, magnet link, or file:// path for local torrent files
+        download_dir: Directory for downloads (will be converted to absolute path)
+        
     Returns:
         GID string or None on failure
     """
-    # Ensure absolute path for download directory
+    # Always use absolute path for aria2
     abs_download_dir = os.path.abspath(download_dir)
     os.makedirs(abs_download_dir, exist_ok=True)
-
+    
     options = {
         "dir": abs_download_dir,
         "seed-time": "0",
@@ -91,13 +92,39 @@ async def add_download(uri: str, download_dir: str) -> Optional[str]:
         "max-tries": "10",
         "retry-wait": "5",
     }
-
-    if uri.startswith(("http://", "https://", "ftp://", "magnet:", "file://")):
+    
+    print(f"[aria2] Adding download to dir: {abs_download_dir}")
+    
+    if uri.startswith(("http://", "https://", "ftp://", "magnet:")):
         gid = await aria2_rpc("aria2.addUri", [[uri], options])
         if gid:
-            print(f"[aria2] Added download with GID: {gid} to dir: {abs_download_dir}")
+            print(f"[aria2] Added download with GID: {gid}")
         return gid
-
+    
+    # Handle local torrent files via file:// URL
+    if uri.startswith("file://"):
+        torrent_path = uri[7:]  # Remove 'file://' prefix
+        if os.path.exists(torrent_path):
+            # For torrent files, we need to read and add via aria2.addTorrent
+            try:
+                with open(torrent_path, 'rb') as f:
+                    torrent_data = f.read()
+                
+                # Convert to base64 for JSON-RPC
+                import base64
+                torrent_base64 = base64.b64encode(torrent_data).decode('utf-8')
+                
+                gid = await aria2_rpc("aria2.addTorrent", [torrent_base64, [], options])
+                if gid:
+                    print(f"[aria2] Added torrent with GID: {gid}")
+                return gid
+            except Exception as e:
+                print(f"[aria2] Failed to add torrent file: {e}")
+                return None
+        else:
+            print(f"[aria2] Torrent file not found: {torrent_path}")
+            return None
+    
     print(f"[aria2] Unsupported URI scheme: {uri[:50]}...")
     return None
 
@@ -138,76 +165,78 @@ def _resolve_path(raw_path: str, aria2_dir: Optional[str] = None) -> Optional[st
     """
     if not raw_path:
         return None
+    
+    print(f"[aria2] Resolving path: {raw_path[:100]}...")
 
-    # Get absolute download directory
-    download_dir_abs = os.path.abspath(settings.DOWNLOAD_DIR)
+    # Strategy 0: If raw_path is absolute and exists, use it directly
+    if os.path.isabs(raw_path) and os.path.exists(raw_path):
+        print(f"[aria2] Found via absolute path: {raw_path}")
+        return raw_path
 
-    # Strategy 1: Try as-is (absolute or relative to CWD)
+    # Strategy 1: Try as-is with abspath (handles relative to CWD)
     abs_p = os.path.abspath(raw_path)
     if os.path.exists(abs_p):
+        print(f"[aria2] Found via abspath: {abs_p}")
         return abs_p
 
-    # Strategy 2: If aria2 reported its dir, try resolving relative to that
+    # Strategy 2: Use aria2's reported directory
     if aria2_dir:
         aria2_dir_abs = os.path.abspath(aria2_dir)
-        # raw_path might be relative to aria2's working dir
-        candidate = os.path.abspath(os.path.join(aria2_dir_abs, os.path.basename(raw_path)))
+        
+        # Try the basename in aria2_dir
+        basename = os.path.basename(raw_path)
+        candidate = os.path.join(aria2_dir_abs, basename)
         if os.path.exists(candidate):
+            print(f"[aria2] Found via basename in aria2_dir: {candidate}")
             return candidate
-        # Or try the raw path as-is relative to aria2_dir
+        
+        # Try raw_path relative to aria2_dir (handles ./ prefix)
         if raw_path.startswith("./") or raw_path.startswith("../") or not raw_path.startswith("/"):
             candidate = os.path.abspath(os.path.join(aria2_dir_abs, raw_path))
             if os.path.exists(candidate):
+                print(f"[aria2] Found via relative to aria2_dir: {candidate}")
                 return candidate
 
-    # Strategy 3: Clean path and try relative to DOWNLOAD_DIR
+    # Strategy 3: Use settings.DOWNLOAD_DIR (already absolute)
+    download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+    
+    # Clean path - remove ./ and ../ prefixes
     clean = raw_path.replace("\\", "/").lstrip("./")
-
+    
     # Remove common prefixes
     prefixes = [
         "downloads/",
         "DOWNLOADS/",
-        "/tmp/downloads/",
-        "/downloads/",
-        download_dir_abs.rstrip("/") + "/"
     ]
     for p in prefixes:
-        if clean.startswith(p):
+        if clean.lower().startswith(p.lower()):
             clean = clean[len(p):]
             break
-
-    candidate = os.path.abspath(os.path.join(download_dir_abs, clean))
+    
+    candidate = os.path.join(download_dir, clean)
     if os.path.exists(candidate):
+        print(f"[aria2] Found via clean path in download_dir: {candidate}")
         return candidate
 
-    # Strategy 4: Check if basename exists in DOWNLOAD_DIR
-    base_candidate = os.path.abspath(os.path.join(download_dir_abs, os.path.basename(raw_path)))
+    # Strategy 4: Check basename in download_dir
+    basename = os.path.basename(raw_path)
+    base_candidate = os.path.join(download_dir, basename)
     if os.path.exists(base_candidate):
+        print(f"[aria2] Found via basename in download_dir: {base_candidate}")
         return base_candidate
 
-    # Strategy 5: Search for file by basename in DOWNLOAD_DIR (handles encoding issues)
+    # Strategy 5: Search for file by basename in download_dir (handles encoding issues)
     try:
-        basename = os.path.basename(raw_path)
-        for entry in os.listdir(download_dir_abs):
+        for entry in os.listdir(download_dir):
             if entry == basename:
-                full_path = os.path.abspath(os.path.join(download_dir_abs, entry))
+                full_path = os.path.join(download_dir, entry)
                 if os.path.exists(full_path):
+                    print(f"[aria2] Found via search in download_dir: {full_path}")
                     return full_path
-    except (OSError, IOError):
-        pass
+    except (OSError, IOError) as e:
+        print(f"[aria2] Error listing download_dir: {e}")
 
-    # Strategy 6: Search recursively in DOWNLOAD_DIR (for torrent subdirectories)
-    try:
-        basename = os.path.basename(raw_path)
-        for root, dirs, files in os.walk(download_dir_abs):
-            for filename in files:
-                if filename == basename:
-                    full_path = os.path.abspath(os.path.join(root, filename))
-                    if os.path.exists(full_path):
-                        return full_path
-    except (OSError, IOError):
-        pass
-
+    print(f"[aria2] Path not found: {raw_path}")
     return None
 
 
@@ -254,6 +283,37 @@ def _find_largest_file(files: List[Dict[str, Any]], aria2_dir: Optional[str] = N
     return largest_path
 
 
+def _search_largest_file_in_dir(directory: str, min_size: int = 0) -> Optional[str]:
+    """
+    Search for the largest file in a directory recursively.
+    
+    Args:
+        directory: Directory to search in
+        min_size: Minimum file size to consider
+        
+    Returns:
+        Path to largest file or None
+    """
+    largest_path = None
+    max_size = min_size
+    
+    try:
+        for root, _dirs, filenames in os.walk(directory):
+            for fname in filenames:
+                full = os.path.join(root, fname)
+                try:
+                    sz = os.path.getsize(full)
+                    if sz > max_size:
+                        max_size = sz
+                        largest_path = full
+                except OSError:
+                    pass
+    except OSError as e:
+        print(f"[aria2] Error searching directory: {e}")
+    
+    return largest_path
+
+
 async def monitor_download(
     gid: str,
     progress_callback,
@@ -282,6 +342,9 @@ async def monitor_download(
     STALL_TIMEOUT = 60  # seconds
     stall_retries = 0
     MAX_STALL_RETRIES = 3
+    
+    # Track expected file size for fallback search
+    expected_size = 0
 
     print(f"[aria2] Monitoring GID: {gid}")
 
@@ -296,6 +359,10 @@ async def monitor_download(
         total_len = int(info.get("totalLength", 0) or 0)
         completed = int(info.get("completedLength", 0) or 0)
         speed = int(info.get("downloadSpeed", 0) or 0)
+        
+        # Track expected size for fallback
+        if total_len > 0:
+            expected_size = total_len
 
         # Handle errors
         if status == "error":
@@ -333,8 +400,25 @@ async def monitor_download(
                         filepath = res
                         break
 
+            # Fallback: search for largest file in download directory
             if not filepath or not os.path.exists(filepath):
-                msg = f"Download complete but file not found. Files: {files}"
+                print(f"[aria2] File not found via aria2 paths, searching download directory...")
+                download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+                filepath = _search_largest_file_in_dir(download_dir, min_size=expected_size * 0.9 if expected_size > 0 else 0)
+                
+                if filepath:
+                    print(f"[aria2] Found file via directory search: {filepath}")
+
+            if not filepath or not os.path.exists(filepath):
+                # List files in download directory for debugging
+                download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+                try:
+                    files_in_dir = os.listdir(download_dir)
+                    print(f"[aria2] Files in download dir: {files_in_dir[:10]}")
+                except Exception as e:
+                    print(f"[aria2] Could not list download dir: {e}")
+                
+                msg = f"Download complete but file not found. Expected size: {expected_size}, aria2_dir: {aria2_dir}"
                 print(f"[aria2] {msg}")
                 return False, msg
 
@@ -355,6 +439,11 @@ async def monitor_download(
                         if res:
                             filepath = res
                             break
+
+                # Fallback: search in download directory
+                if not filepath or not os.path.exists(filepath):
+                    download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
+                    filepath = _search_largest_file_in_dir(download_dir, min_size=total_len * 0.9)
 
                 if filepath and os.path.exists(filepath):
                     print(f"[aria2] 100% active, file confirmed: {filepath}")

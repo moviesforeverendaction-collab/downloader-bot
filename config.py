@@ -15,6 +15,19 @@ for _k in _KEYS:
         os.environ.pop(_k, None)
 
 
+def _get_absolute_download_dir() -> str:
+    """Get absolute path for download directory, suitable for Render/container environments."""
+    raw_dir = os.environ.get("DOWNLOAD_DIR", "").strip()
+    
+    if not raw_dir:
+        raw_dir = "./downloads"
+    
+    # Always convert to absolute path
+    abs_dir = os.path.abspath(raw_dir)
+    
+    return abs_dir
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
@@ -33,22 +46,27 @@ class Settings(BaseSettings):
     )
     PORT: int = Field(default=8080, description="Port for web server")
     
-    # Download settings
-    DOWNLOAD_DIR: str = Field(default="/tmp/downloads", description="Directory for downloads")
+    # Download settings - use absolute path
+    DOWNLOAD_DIR: str = Field(
+        default_factory=_get_absolute_download_dir,
+        description="Directory for downloads (always absolute path)"
+    )
     # 1.9 GB in bytes — safe margin below Telegram's 2 GB limit
     SPLIT_SIZE: int = Field(
         default=1900 * 1024 * 1024,
         description="Maximum file size before splitting"
     )
     
-    @field_validator("DOWNLOAD_DIR")
+    @field_validator("DOWNLOAD_DIR", mode="before")
     @classmethod
     def validate_download_dir(cls, v):
-        """Ensure download directory exists and return absolute path."""
-        # Convert to absolute path
-        abs_path = os.path.abspath(v)
-        os.makedirs(abs_path, exist_ok=True)
-        return abs_path
+        """Ensure download directory is absolute and exists."""
+        if not v:
+            v = "./downloads"
+        # Always convert to absolute path
+        abs_dir = os.path.abspath(str(v))
+        os.makedirs(abs_dir, exist_ok=True)
+        return abs_dir
     
     class Config:
         env_file = ".env"
@@ -58,5 +76,6 @@ class Settings(BaseSettings):
 # Global settings instance
 settings = Settings()
 
-# Ensure download directory exists
+# Ensure download directory exists with absolute path
 os.makedirs(settings.DOWNLOAD_DIR, exist_ok=True)
+print(f"[config] Download directory: {settings.DOWNLOAD_DIR}")

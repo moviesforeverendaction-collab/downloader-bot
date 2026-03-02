@@ -3,124 +3,649 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Leech UI</title>
+    <title>TG Leecher - Telegram Upload Bot</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+        
         body {
-            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-            color: white;
+            background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
             min-height: 100vh;
         }
+        
         .glass-panel {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 
+                0 25px 50px -12px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
         }
-        .neon-border {
-            box-shadow: 0 0 10px rgba(6, 182, 212, 0.5), inset 0 0 10px rgba(6, 182, 212, 0.2);
-            border: 1px solid rgba(6, 182, 212, 0.5);
+        
+        .gradient-text {
+            background: linear-gradient(135deg, #00f5ff 0%, #7c3aed 50%, #ec4899 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .input-glow:focus {
+            box-shadow: 
+                0 0 0 3px rgba(0, 245, 255, 0.1),
+                0 0 20px rgba(0, 245, 255, 0.2);
+        }
+        
+        .btn-gradient {
+            background: linear-gradient(135deg, #00f5ff 0%, #7c3aed 100%);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-gradient:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 40px rgba(0, 245, 255, 0.3);
+        }
+        
+        .btn-gradient:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .progress-bar {
+            background: linear-gradient(90deg, #00f5ff 0%, #7c3aed 50%, #ec4899 100%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        
+        .pulse-ring {
+            animation: pulse-ring 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+        }
+        
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.3); opacity: 0; }
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-dot.active {
+            background: #00f5ff;
+            box-shadow: 0 0 10px #00f5ff;
+        }
+        
+        .status-dot.error {
+            background: #ef4444;
+            box-shadow: 0 0 10px #ef4444;
+        }
+        
+        .status-dot.success {
+            background: #22c55e;
+            box-shadow: 0 0 10px #22c55e;
+        }
+        
+        .floating-particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: -1;
+        }
+        
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(0, 245, 255, 0.5);
+            border-radius: 50%;
+            animation: float 20s infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(100vh) rotate(0deg);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+            }
+            90% {
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(-100vh) rotate(720deg);
+                opacity: 0;
+            }
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+        }
+        
+        .slide-in {
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
     </style>
 </head>
 <body class="flex items-center justify-center p-4">
+    <div class="floating-particles" id="particles"></div>
 
-    <div class="glass-panel p-8 rounded-2xl w-full max-w-lg space-y-6">
-        <h1 class="text-3xl font-bold text-center bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">
-            TG Leecher
-        </h1>
+    <div class="glass-panel p-8 rounded-3xl w-full max-w-xl space-y-6">
+        <!-- Header -->
+        <div class="text-center space-y-2">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-400 to-purple-600 mb-4 relative">
+                <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+                <div class="absolute inset-0 rounded-2xl border-2 border-cyan-400 pulse-ring"></div>
+            </div>
+            <h1 class="text-3xl font-bold gradient-text">TG Leecher</h1>
+            <p class="text-gray-400 text-sm">Fast downloads & uploads to Telegram</p>
+        </div>
 
+        <!-- Connection Status -->
+        <div class="flex items-center justify-center gap-2 text-xs">
+            <span id="connectionStatus" class="flex items-center text-gray-500">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Connecting...</span>
+            </span>
+        </div>
+
+        <!-- Input Section -->
         <div class="space-y-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-300 mb-1">Direct Download URL</label>
-                <input type="text" id="urlInput" placeholder="https://example.com/file.zip" 
-                       class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white focus:outline-none focus:border-cyan-500 transition-colors">
+            <!-- URL Input -->
+            <div class="relative">
+                <label class="block text-sm font-medium text-gray-300 mb-2 ml-1">Download URL</label>
+                <div class="relative">
+                    <input 
+                        type="text" 
+                        id="urlInput" 
+                        placeholder="https://example.com/file.zip or magnet:..."
+                        class="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-4 pl-12 text-white placeholder-gray-500 focus:outline-none input-glow transition-all duration-300"
+                    >
+                    <svg class="w-5 h-5 text-gray-500 absolute left-4 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                    </svg>
+                </div>
+                <p class="text-xs text-gray-500 mt-2 ml-1">Supports direct links, magnet links, and torrent files</p>
             </div>
 
-            <button id="leechBtn" onclick="startLeech()" 
-                    class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-3 rounded-lg transition-all duration-300 shadow-[0_0_15px_rgba(6,182,212,0.4)] hover:shadow-[0_0_25px_rgba(6,182,212,0.6)]">
-                Leech to Telegram
+            <!-- Drag & Drop Zone -->
+            <div 
+                id="dropZone" 
+                class="border-2 border-dashed border-white/20 rounded-xl p-6 text-center transition-all duration-300 hover:border-cyan-400/50 hover:bg-white/5 cursor-pointer"
+                onclick="document.getElementById('torrentInput').click()"
+            >
+                <input type="file" id="torrentInput" accept=".torrent" class="hidden" onchange="handleTorrentFile(this)">
+                <svg class="w-8 h-8 text-gray-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+                <p class="text-sm text-gray-400">Drop a .torrent file here or click to browse</p>
+                <p class="text-xs text-gray-600 mt-1" id="dropZoneFile">No file selected</p>
+            </div>
+
+            <button 
+                id="leechBtn" 
+                onclick="startLeech()"
+                class="w-full btn-gradient text-white font-semibold py-4 rounded-xl transition-all duration-300 flex items-center justify-center gap-2"
+            >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                </svg>
+                <span id="btnText">Start Download</span>
             </button>
         </div>
 
-        <div id="statusArea" class="hidden space-y-2 pt-4 border-t border-gray-700 mt-4">
-            <div class="flex justify-between text-sm">
-                <span id="statusText" class="text-gray-300">Idle</span>
-                <span id="percentageText" class="text-cyan-400 font-mono">0%</span>
+        <!-- Progress Section -->
+        <div id="progressSection" class="hidden space-y-4 pt-4 border-t border-white/10">
+            <!-- Main Progress -->
+            <div class="space-y-2">
+                <div class="flex justify-between items-center">
+                    <span id="statusLabel" class="text-sm font-medium text-gray-300 flex items-center">
+                        <span class="status-dot active" id="progressDot"></span>
+                        <span id="statusTextMain">Initializing...</span>
+                    </span>
+                    <span id="percentageText" class="text-xl font-bold text-cyan-400 font-mono">0%</span>
+                </div>
+                
+                <div class="w-full bg-black/30 rounded-full h-3 overflow-hidden">
+                    <div id="progressBar" class="progress-bar h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
             </div>
-            
-            <div class="w-full bg-gray-800 rounded-full h-2.5">
-                <div id="progressBar" class="bg-gradient-to-r from-cyan-400 to-blue-500 h-2.5 rounded-full" style="width: 0%"></div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-2 gap-3">
+                <div class="stat-card">
+                    <div class="text-xs text-gray-500 mb-1">Downloaded</div>
+                    <div id="downloadedSize" class="text-sm font-medium text-white">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="text-xs text-gray-500 mb-1">Total Size</div>
+                    <div id="totalSize" class="text-sm font-medium text-white">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="text-xs text-gray-500 mb-1">Speed</div>
+                    <div id="speedText" class="text-sm font-medium text-cyan-400">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="text-xs text-gray-500 mb-1">ETA</div>
+                    <div id="etaText" class="text-sm font-medium text-purple-400">--</div>
+                </div>
+            </div>
+
+            <!-- Log Output -->
+            <div class="bg-black/20 rounded-xl p-3 border border-white/5">
+                <div class="text-xs text-gray-500 mb-2 uppercase tracking-wider">Activity Log</div>
+                <div id="logOutput" class="text-xs text-gray-400 font-mono space-y-1 max-h-32 overflow-y-auto">
+                </div>
+            </div>
+        </div>
+
+        <!-- Result Message -->
+        <div id="resultMessage" class="hidden slide-in">
+            <div id="resultBox" class="rounded-xl p-4 flex items-start gap-3">
+                <!-- Dynamic content -->
+            </div>
+        </div>
+
+        <!-- Features -->
+        <div class="pt-4 border-t border-white/10">
+            <div class="grid grid-cols-3 gap-2 text-center">
+                <div class="p-3 rounded-lg hover:bg-white/5 transition-colors">
+                    <div class="text-cyan-400 mb-1">
+                        <svg class="w-6 h-6 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                        </svg>
+                    </div>
+                    <div class="text-xs text-gray-400">Fast</div>
+                </div>
+                <div class="p-3 rounded-lg hover:bg-white/5 transition-colors">
+                    <div class="text-purple-400 mb-1">
+                        <svg class="w-6 h-6 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/>
+                        </svg>
+                    </div>
+                    <div class="text-xs text-gray-400">Auto Split</div>
+                </div>
+                <div class="p-3 rounded-lg hover:bg-white/5 transition-colors">
+                    <div class="text-pink-400 mb-1">
+                        <svg class="w-6 h-6 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                        </svg>
+                    </div>
+                    <div class="text-xs text-gray-400">Secure</div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         let ws;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        let selectedTorrentFile = null;
+        
+        // Create floating particles
+        function createParticles() {
+            const container = document.getElementById('particles');
+            for (let i = 0; i < 30; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.style.left = Math.random() * 100 + '%';
+                particle.style.animationDelay = Math.random() * 20 + 's';
+                particle.style.animationDuration = (15 + Math.random() * 10) + 's';
+                container.appendChild(particle);
+            }
+        }
+        
+        // Drag and Drop handlers
+        const dropZone = document.getElementById('dropZone');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dropZone.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            dropZone.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight(e) {
+            dropZone.classList.add('border-cyan-400', 'bg-white/10');
+        }
+        
+        function unhighlight(e) {
+            dropZone.classList.remove('border-cyan-400', 'bg-white/10');
+        }
+        
+        dropZone.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length > 0 && files[0].name.endsWith('.torrent')) {
+                handleTorrentFile({ files: files });
+            } else {
+                addLog('Please drop a .torrent file', 'error');
+            }
+        }
+        
+        function handleTorrentFile(input) {
+            const file = input.files[0];
+            if (file && file.name.endsWith('.torrent')) {
+                selectedTorrentFile = file;
+                document.getElementById('dropZoneFile').textContent = `Selected: ${file.name}`;
+                document.getElementById('dropZoneFile').classList.add('text-cyan-400');
+                addLog(`Torrent file selected: ${file.name}`, 'success');
+            } else {
+                addLog('Invalid file. Please select a .torrent file', 'error');
+            }
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function formatSpeed(bps) {
+            return formatBytes(bps) + '/s';
+        }
+        
+        function formatETA(seconds) {
+            if (!seconds || seconds <= 0 || seconds > 86400) return '∞';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            const h = Math.floor(m / 60);
+            if (h > 0) return `${h}h ${m % 60}m`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
+        }
+        
+        function addLog(message, type = 'info') {
+            const logOutput = document.getElementById('logOutput');
+            const entry = document.createElement('div');
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            
+            let colorClass = 'text-gray-400';
+            if (type === 'success') colorClass = 'text-green-400';
+            if (type === 'error') colorClass = 'text-red-400';
+            if (type === 'warn') colorClass = 'text-yellow-400';
+            
+            entry.className = `${colorClass}`;
+            entry.innerHTML = `<span class="text-gray-600">[${time}]</span> ${message}`;
+            
+            logOutput.appendChild(entry);
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+        
+        function updateConnectionStatus(connected) {
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+            
+            if (connected) {
+                dot.className = 'status-dot success';
+                text.textContent = 'Connected';
+                text.className = 'text-green-400';
+            } else {
+                dot.className = 'status-dot error';
+                text.textContent = 'Disconnected';
+                text.className = 'text-red-400';
+            }
+        }
         
         function connect() {
-            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = function() {
+                console.log('[WS] Connected');
+                reconnectAttempts = 0;
+                updateConnectionStatus(true);
+                addLog('Connected to server', 'success');
+            };
             
             ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                
-                const statusArea = document.getElementById('statusArea');
-                const statusText = document.getElementById('statusText');
-                const percentageText = document.getElementById('percentageText');
-                const progressBar = document.getElementById('progressBar');
-                const leechBtn = document.getElementById('leechBtn');
-                
-                statusArea.classList.remove('hidden');
-                
-                if (data.status === 'error') {
-                    statusText.innerText = "Error: " + data.message;
-                    statusText.className = "text-red-400";
-                    leechBtn.disabled = false;
-                    leechBtn.innerText = "Leech to Telegram";
-                    return;
-                }
-
-                if (data.status === 'completed') {
-                    statusText.innerText = data.message;
-                    statusText.className = "text-green-400";
-                    percentageText.innerText = "100%";
-                    progressBar.style.width = "100%";
-                    leechBtn.disabled = false;
-                    leechBtn.innerText = "Leech again";
-                    return;
-                }
-                
-                statusText.className = "text-gray-300";
-                statusText.innerText = data.status.charAt(0).toUpperCase() + data.status.slice(1) + "...";
-                
-                if (data.percentage !== undefined) {
-                    percentageText.innerText = data.percentage + "%";
-                    progressBar.style.width = data.percentage + "%";
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    console.error('[WS] Parse error:', e);
                 }
             };
             
             ws.onclose = function() {
-                console.log("WebSocket connection closed. Reconnecting...");
-                setTimeout(connect, 1000);
+                console.log('[WS] Disconnected');
+                updateConnectionStatus(false);
+                addLog('Connection lost', 'warn');
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    addLog(`Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`, 'warn');
+                    setTimeout(connect, 2000);
+                } else {
+                    addLog('Max reconnection attempts reached. Please refresh.', 'error');
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('[WS] Error:', error);
+                addLog('WebSocket error occurred', 'error');
             };
         }
-
-        function startLeech() {
-            const urlInput = document.getElementById('urlInput');
-            const url = urlInput.value.trim();
-            const leechBtn = document.getElementById('leechBtn');
+        
+        function handleMessage(data) {
+            const progressSection = document.getElementById('progressSection');
+            const statusLabel = document.getElementById('statusLabel');
+            const percentageText = document.getElementById('percentageText');
+            const progressBar = document.getElementById('progressBar');
+            const btn = document.getElementById('leechBtn');
+            const btnText = document.getElementById('btnText');
+            const resultMessage = document.getElementById('resultMessage');
             
-            if (!url) return alert("Please enter a URL");
+            // Show progress section
+            progressSection.classList.remove('hidden');
+            resultMessage.classList.add('hidden');
             
-            if (ws.readyState === WebSocket.OPEN) {
-                leechBtn.disabled = true;
-                leechBtn.innerText = "Processing...";
-                ws.send(JSON.stringify({url: url}));
-            } else {
-                alert("Connection failed. Please refresh the page.");
+            // Handle errors
+            if (data.status === 'error') {
+                addLog(`Error: ${data.message}`, 'error');
+                showResult('error', data.message);
+                resetButton();
+                return;
+            }
+            
+            // Handle completion
+            if (data.status === 'completed') {
+                addLog('Upload completed successfully!', 'success');
+                showResult('success', data.message || 'File uploaded to Telegram successfully!');
+                resetButton();
+                percentageText.textContent = '100%';
+                progressBar.style.width = '100%';
+                document.getElementById('statusTextMain').textContent = 'Completed!';
+                document.getElementById('progressDot').className = 'status-dot success';
+                return;
+            }
+            
+            // Update progress info
+            const statusText = data.message || data.status;
+            document.getElementById('statusTextMain').textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
+            addLog(statusText);
+            
+            if (data.percentage !== undefined) {
+                const pct = Math.min(100, Math.max(0, data.percentage));
+                percentageText.textContent = pct + '%';
+                progressBar.style.width = pct + '%';
+            }
+            
+            if (data.current !== undefined) {
+                document.getElementById('downloadedSize').textContent = formatBytes(data.current);
+            }
+            
+            if (data.total !== undefined && data.total > 0) {
+                document.getElementById('totalSize').textContent = formatBytes(data.total);
+            }
+            
+            if (data.speed !== undefined && data.speed > 0) {
+                document.getElementById('speedText').textContent = formatSpeed(data.speed);
+            }
+            
+            if (data.eta !== undefined) {
+                document.getElementById('etaText').textContent = formatETA(data.eta);
+            }
+            
+            // Update part info if available
+            if (data.part && data.total_parts) {
+                addLog(`Uploading part ${data.part} of ${data.total_parts}`);
             }
         }
-
+        
+        function showResult(type, message) {
+            const resultMessage = document.getElementById('resultMessage');
+            const resultBox = document.getElementById('resultBox');
+            
+            resultMessage.classList.remove('hidden');
+            
+            if (type === 'success') {
+                resultBox.className = 'rounded-xl p-4 flex items-start gap-3 bg-green-500/10 border border-green-500/30';
+                resultBox.innerHTML = `
+                    <svg class="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    <div>
+                        <div class="text-green-400 font-medium">Success!</div>
+                        <div class="text-gray-400 text-sm mt-1">${message}</div>
+                    </div>
+                `;
+            } else {
+                resultBox.className = 'rounded-xl p-4 flex items-start gap-3 bg-red-500/10 border border-red-500/30';
+                resultBox.innerHTML = `
+                    <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                    <div>
+                        <div class="text-red-400 font-medium">Error</div>
+                        <div class="text-gray-400 text-sm mt-1">${message}</div>
+                    </div>
+                `;
+            }
+        }
+        
+        function resetButton() {
+            const btn = document.getElementById('leechBtn');
+            const btnText = document.getElementById('btnText');
+            btn.disabled = false;
+            btnText.textContent = 'Start Download';
+        }
+        
+        async function startLeech() {
+            const urlInput = document.getElementById('urlInput');
+            const url = urlInput.value.trim();
+            const btn = document.getElementById('leechBtn');
+            const btnText = document.getElementById('btnText');
+            
+            if (!url && !selectedTorrentFile) {
+                alert('Please enter a URL or select a torrent file');
+                return;
+            }
+            
+            if (ws.readyState !== WebSocket.OPEN) {
+                alert('Not connected to server. Please wait or refresh the page.');
+                return;
+            }
+            
+            // Reset UI
+            document.getElementById('logOutput').innerHTML = '';
+            document.getElementById('downloadedSize').textContent = '--';
+            document.getElementById('totalSize').textContent = '--';
+            document.getElementById('speedText').textContent = '--';
+            document.getElementById('etaText').textContent = '--';
+            document.getElementById('resultMessage').classList.add('hidden');
+            document.getElementById('progressDot').className = 'status-dot active';
+            
+            // Disable button
+            btn.disabled = true;
+            btnText.textContent = 'Processing...';
+            
+            // Handle torrent file upload
+            if (selectedTorrentFile) {
+                addLog('Reading torrent file: ' + selectedTorrentFile.name);
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const arrayBuffer = e.target.result;
+                    const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(arrayBuffer)));
+                    
+                    addLog('Uploading torrent file...');
+                    ws.send(JSON.stringify({
+                        torrent_data: base64,
+                        torrent_name: selectedTorrentFile.name
+                    }));
+                    
+                    // Reset file selection
+                    selectedTorrentFile = null;
+                    document.getElementById('torrentInput').value = '';
+                    document.getElementById('dropZoneFile').textContent = 'No file selected';
+                    document.getElementById('dropZoneFile').classList.remove('text-cyan-400');
+                };
+                reader.readAsArrayBuffer(selectedTorrentFile);
+            } else {
+                // URL download
+                addLog('Starting download: ' + url.substring(0, 50) + (url.length > 50 ? '...' : ''));
+                ws.send(JSON.stringify({ url: url }));
+            }
+        }
+        
+        // Enter key support
+        document.getElementById('urlInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                startLeech();
+            }
+        });
+        
+        // Initialize
+        createParticles();
         connect();
     </script>
 </body>

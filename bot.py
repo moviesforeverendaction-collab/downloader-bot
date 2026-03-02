@@ -1,11 +1,15 @@
+"""
+Telegram Leech Bot - Aria2 Powered
+===================================
+Downloads files from URLs/magnets/torrents and uploads to Telegram.
+"""
+
 import os
 import json
 import time
 import asyncio
 import random
 import subprocess
-import aiofiles
-import aiohttp
 
 from aiohttp import web
 from pyrogram import Client, filters, idle, enums
@@ -33,7 +37,7 @@ app = Client(
 )
 
 # Anti-flood: track last edit time per message id
-_last_edit_time = {}
+_last_edit_time: dict[int, float] = {}
 FLOOD_COOLDOWN = 3.0
 
 # Active downloads: maps message_id → {"gid": str, "cancelled": bool}
@@ -41,12 +45,14 @@ _active_downloads: dict[int, dict] = {}
 
 
 def _cancel_keyboard(msg_id: int) -> InlineKeyboardMarkup:
+    """Generate cancel button keyboard for a message."""
     return InlineKeyboardMarkup([[InlineKeyboardButton(
-        "❌ Cancel", callback_data=f"cancel:{msg_id}"
+        "❌ Cancel Download", callback_data=f"cancel:{msg_id}"
     )]])
 
-async def safe_edit(msg, text, reply_markup=None):
-    """Edit a message, throttled to once per FLOOD_COOLDOWN seconds."""
+
+async def safe_edit(msg: Message, text: str, reply_markup=None) -> None:
+    """Edit a message with flood protection (once per FLOOD_COOLDOWN seconds)."""
     now = time.time()
     msg_id = msg.id
     if now - _last_edit_time.get(msg_id, 0) < FLOOD_COOLDOWN:
@@ -58,65 +64,68 @@ async def safe_edit(msg, text, reply_markup=None):
             reply_markup=reply_markup,
         )
         _last_edit_time[msg_id] = time.time()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[safe_edit] Failed to edit message {msg_id}: {e}")
 
 
 # ---------------------------------------------------------------------------
 # Boot up Aria2 Daemon
 # ---------------------------------------------------------------------------
-def start_aria2_daemon():
-    print("Starting aria2c daemon...")
-    subprocess.Popen([
-        "aria2c",
-        "--enable-rpc",
-        "--rpc-listen-all=false",
-        "--rpc-listen-port=6800",
-        "--daemon=true",
-        "--max-overall-download-limit=0",
-        "--max-overall-upload-limit=0",
-        "--disable-ipv6=true",
-        "--disk-cache=64M",
-        "--file-allocation=none",
-        "--max-connection-per-server=10",
-        "--split=10",
-        "--min-split-size=10M",
-        "--timeout=600",
-        "--max-tries=5",
-        "--retry-wait=3",
-        "--seed-time=0"
-    ])
-    time.sleep(2)  # Give it a moment to boot
+def start_aria2_daemon() -> None:
+    """Start aria2c daemon with optimized settings."""
+    print("[aria2] Starting daemon...")
+    try:
+        subprocess.Popen([
+            "aria2c",
+            "--enable-rpc",
+            "--rpc-listen-all=false",
+            "--rpc-listen-port=6800",
+            "--daemon=true",
+            "--max-overall-download-limit=0",
+            "--max-overall-upload-limit=0",
+            "--disable-ipv6=true",
+            "--disk-cache=128M",
+            "--file-allocation=none",
+            "--max-connection-per-server=16",
+            "--split=16",
+            "--min-split-size=10M",
+            "--max-concurrent-downloads=5",
+            "--timeout=600",
+            "--max-tries=10",
+            "--retry-wait=5",
+            "--seed-time=0",
+            "--bt-stop-timeout=600",
+            "--max-overall-upload-limit=1K"
+        ])
+        time.sleep(3)
+        print("[aria2] Daemon started successfully")
+    except Exception as e:
+        print(f"[aria2] Failed to start daemon: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Cancel button callback
+# Bot Commands
 # ---------------------------------------------------------------------------
 @app.on_callback_query(filters.regex(r"^cancel:(\d+)$"))
-async def cancel_callback(client, callback_query: CallbackQuery):
+async def cancel_callback(client: Client, callback_query: CallbackQuery) -> None:
+    """Handle cancel button click."""
     msg_id = int(callback_query.matches[0].group(1))
-
     entry = _active_downloads.get(msg_id)
+    
     if not entry:
-        await callback_query.answer("Nothing to cancel (already finished?).", show_alert=True)
+        await callback_query.answer("Download already finished or cancelled.", show_alert=True)
         return
 
-    # Mark as cancelled so leech_handler picks it up after monitor_download returns
     entry["cancelled"] = True
-
-    # Tell aria2 to stop the download immediately
     gid = entry.get("gid")
+    
     if gid:
         await aria2_rpc("aria2.forceRemove", [gid])
 
-    await callback_query.answer("🚫 Cancelling...")
+    await callback_query.answer("🚫 Cancelling download...")
     try:
         await callback_query.message.edit_text(
-            "🚫 **Download cancelled.**",
+            "🚫 **Download cancelled by user.**",
             parse_mode=enums.ParseMode.MARKDOWN,
         )
     except Exception:
@@ -124,144 +133,292 @@ async def cancel_callback(client, callback_query: CallbackQuery):
 
 
 @app.on_message(filters.command("start"))
-
-async def start_handler(client, message):
+async def start_handler(client: Client, message: Message) -> None:
+    """Handle /start command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         await message.reply_text("⛔️ **Access Denied:** You are not authorized to use this bot.")
         return
         
-    await message.reply_text(
+    welcome_text = (
         "🚀 **TG Leecher Bot (Aria2 Powered)**\n\n"
-        "Send me any downloadable link / magnet / torrent!\n\n"
-        "✅ Direct links, short links, magnets, torrents\n"
-        "✂️ Auto-splits files **> 1.9 GB** natively\n"
-        "📥 Super fast download / upload\n\n"
-        "**Settings Commands:**\n"
-        "`/setdump <channel_id>` - Set auto-upload dump channel\n"
-        "`/setcaption <caption>` - Set custom caption text\n"
-        "`/setthumb` (reply to image) - Set custom thumbnail image",
-        parse_mode=enums.ParseMode.MARKDOWN,
+        "Send me any downloadable link, magnet link, or upload a **.torrent** file!\n\n"
+        "**✨ Features:**\n"
+        "• Direct links, magnets, torrent files support\n"
+        "• Auto-splits files **> 1.9 GB** natively\n"
+        "• High-speed download & upload\n"
+        "• Real-time progress tracking\n\n"
+        "**🔧 Commands:**\n"
+        "`/status` - Check bot status & disk space\n"
+        "`/cancel` - Cancel active download\n"
+        "`/setdump <channel_id>` - Set dump channel\n"
+        "`/setcaption <text>` - Set custom caption\n"
+        "`/setthumb` (reply to image) - Set thumbnail\n"
+        "`/help` - Show detailed help"
     )
+    await message.reply_text(welcome_text, parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@app.on_message(filters.command("help"))
+async def help_handler(client: Client, message: Message) -> None:
+    """Handle /help command."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+        
+    help_text = (
+        "**📖 How to Use:**\n\n"
+        "1️⃣ **Send a link:** Paste any direct URL or magnet link\n"
+        "2️⃣ **Upload torrent:** Send a `.torrent` file directly\n"
+        "3️⃣ **Monitor progress:** Watch real-time download/upload progress\n"
+        "4️⃣ **Cancel:** Use `/cancel` or click the cancel button\n\n"
+        "**🔧 Available Commands:**\n"
+        "• `/start` - Show welcome message\n"
+        "• `/status` - Check bot status and disk space\n"
+        "• `/cancel` - Cancel your active download\n"
+        "• `/setdump <channel_id>` - Set channel for auto-uploads\n"
+        "• `/setcaption <text>` - Add custom caption to uploads\n"
+        "• `/setthumb` (reply to image) - Set thumbnail\n"
+        "• `/help` - Show this help message\n\n"
+        "**💡 Tips:**\n"
+        "• Files larger than 1.9GB are automatically split\n"
+        "• Use the Web UI for a visual experience\n"
+        "• Set a dump channel to auto-upload files there"
+    )
+    await message.reply_text(help_text, parse_mode=enums.ParseMode.MARKDOWN)
+
 
 @app.on_message(filters.command("setdump"))
-async def setdump_handler(client, message):
+async def setdump_handler(client: Client, message: Message) -> None:
+    """Handle /setdump command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         return
         
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.reply_text("Usage: `/setdump -100XXXXX`")
+        await message.reply_text(
+            "**Usage:** `/setdump -100XXXXX`\n\n"
+            "Get your channel ID by forwarding a message from your channel to @userinfobot"
+        )
         return
     try:
         channel_id = int(parts[1])
         set_dump_channel(message.from_user.id, channel_id)
-        await message.reply_text(f"✅ Dump channel set to: `{channel_id}`")
+        await message.reply_text(f"✅ **Dump channel set to:** `{channel_id}`")
     except ValueError:
-        await message.reply_text("❌ Invalid ID.")
+        await message.reply_text("❌ **Invalid ID.** Please provide a valid number.")
+
 
 @app.on_message(filters.command("setcaption"))
-async def setcaption_handler(client, message):
+async def setcaption_handler(client: Client, message: Message) -> None:
+    """Handle /setcaption command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         return
         
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        caption = ""
-        set_custom_caption(message.from_user.id, caption)
-        await message.reply_text("✅ Custom caption removed.")
+        set_custom_caption(message.from_user.id, "")
+        await message.reply_text("✅ **Custom caption removed.**")
     else:
         caption = parts[1]
         set_custom_caption(message.from_user.id, caption)
-        await message.reply_text(f"✅ Custom caption set to:\n{caption}")
+        await message.reply_text(f"✅ **Custom caption set to:**\n{caption}")
+
 
 @app.on_message(filters.command("setthumb"))
-async def setthumb_handler(client, message):
+async def setthumb_handler(client: Client, message: Message) -> None:
+    """Handle /setthumb command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         return
         
     if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.reply_text("❌ Reply to a photo with `/setthumb` to set it.")
+        await message.reply_text("❌ **Reply to a photo** with `/setthumb` to set it as thumbnail.")
         return
         
     photo = message.reply_to_message.photo
     set_custom_thumb(message.from_user.id, photo.file_id)
-    await message.reply_text("✅ Custom thumbnail saved!")
+    await message.reply_text("✅ **Custom thumbnail saved!**")
 
 
-# ---------------------------------------------------------------------------
-# Handle any URL / Magnet sent by the user
-# ---------------------------------------------------------------------------
-@app.on_message(filters.text & filters.regex(r"(https?://\S+|magnet:\?xt=urn:btih:\S+)"))
-async def leech_handler(client, message):
+@app.on_message(filters.command("status"))
+async def status_handler(client: Client, message: Message) -> None:
+    """Handle /status command."""
     if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
         return
+    
+    active_count = len(_active_downloads)
+    download_dir = settings.DOWNLOAD_DIR
+    
+    # Calculate disk usage
+    try:
+        import shutil
+        total, used, free = shutil.disk_usage(download_dir)
+        disk_info = f"💾 Disk Free: `{format_bytes(free)}` / `{format_bytes(total)}`"
+    except Exception:
+        disk_info = "💾 Disk: Unknown"
+    
+    status_text = (
+        "📊 **Bot Status**\n\n"
+        f"⬇️ Active Downloads: `{active_count}`\n"
+        f"📁 Download Dir: `{download_dir}`\n"
+        f"{disk_info}\n\n"
+        f"✅ Bot is running normally"
+    )
+    await message.reply_text(status_text, parse_mode=enums.ParseMode.MARKDOWN)
+
+
+@app.on_message(filters.command("cancel"))
+async def cancel_cmd_handler(client: Client, message: Message) -> None:
+    """Handle /cancel command."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+    
+    # Find active download for this user
+    user_active = None
+    for msg_id, entry in _active_downloads.items():
+        # Check if the status message belongs to this user
+        try:
+            msg = await client.get_messages(message.chat.id, msg_id)
+            if msg and msg.from_user and msg.from_user.id == client.me.id:
+                user_active = (msg_id, entry)
+                break
+        except Exception:
+            continue
+    
+    if not user_active:
+        await message.reply_text("ℹ️ No active download to cancel.")
+        return
+    
+    msg_id, entry = user_active
+    entry["cancelled"] = True
+    gid = entry.get("gid")
+    
+    if gid:
+        await aria2_rpc("aria2.forceRemove", [gid])
+    
+    await message.reply_text("🚫 **Download cancelled.**")
+
+
+@app.on_message(filters.document)
+async def torrent_handler(client: Client, message: Message) -> None:
+    """Handle torrent file uploads."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+    
+    # Check if it's a torrent file
+    if not message.document or not message.document.file_name:
+        return
         
-    url = message.text.strip()
+    if not message.document.file_name.endswith('.torrent'):
+        return
+    
     status = await message.reply_text(
-        "🔍 **Adding to Aria2...**",
+        "📥 **Received torrent file, downloading...**",
         parse_mode=enums.ParseMode.MARKDOWN,
     )
+    
+    try:
+        # Download the torrent file
+        torrent_path = await client.download_media(message.document)
+        if not torrent_path:
+            await safe_edit(status, "❌ **Failed to download torrent file.**")
+            return
+        
+        # Convert to magnet or use as-is with aria2
+        # For torrent files, we'll use the file path directly
+        await safe_edit(status, "🔍 **Processing torrent...**")
+        
+        # Create a file:// URL for the torrent
+        torrent_url = f"file://{os.path.abspath(torrent_path)}"
+        
+        # Now process as a regular download
+        await process_download(client, message, torrent_url, status)
+        
+        # Cleanup torrent file
+        try:
+            if os.path.exists(torrent_path):
+                os.remove(torrent_path)
+        except Exception:
+            pass
+            
+    except Exception as e:
+        print(f"[torrent_handler] Error: {e}")
+        await safe_edit(status, f"❌ **Error:** `{str(e)[:200]}`")
 
+
+# ---------------------------------------------------------------------------
+# Download Processing Logic
+# ---------------------------------------------------------------------------
+async def process_download(client: Client, message: Message, url: str, status: Message) -> None:
+    """
+    Process a download from URL/magnet and upload to Telegram.
+    This is the core download/upload logic shared by URL and torrent handlers.
+    """
     user_id = message.from_user.id
     target_chat_id = get_dump_channel(user_id) or message.chat.id
     custom_caption = get_custom_caption(user_id) or ""
     custom_thumb_id = get_custom_thumb(user_id)
 
-    # 1. Download via Aria2
+    file_parts = []
+    thumb_path = None
+    filepath = None
+
     try:
+        # 1. Add download to Aria2
         gid = await add_download(url, settings.DOWNLOAD_DIR)
         if not gid:
-            await safe_edit(status, "❌ **Error:** Could not add to aria2.")
+            await safe_edit(status, "❌ **Failed to add download.** Aria2 might be busy.")
             return
 
-        async def dl_progress(action, current, total, t0, speed=0, eta_seconds=0):
-            # Pass aria2-reported speed & ETA straight into format_progress
-            # Show cancel button while downloading
+        # Setup progress callback
+        start_time = time.time()
+
+        async def dl_progress(action: str, current: int, total: int, t0: float, speed: float = 0, eta_seconds: float = 0):
             await safe_edit(
                 status,
                 format_progress(current, total, t0, action, speed=speed, eta_seconds=eta_seconds),
                 reply_markup=_cancel_keyboard(status.id),
             )
 
-        await safe_edit(status, "⬇️ **Downloading...**", reply_markup=_cancel_keyboard(status.id))
-        start_time = time.time()
+        await safe_edit(status, "⬇️ **Starting download...**", reply_markup=_cancel_keyboard(status.id))
 
-        # Register this download so the cancel callback can reach it
+        # Register download for cancel functionality
         _active_downloads[status.id] = {"gid": gid, "cancelled": False}
         
-        success, result_path_or_err = await monitor_download(gid, dl_progress, start_time)
+        # Monitor download
+        success, result = await monitor_download(gid, dl_progress, start_time)
 
-        # Check if cancelled during download
+        # Check if cancelled
         entry = _active_downloads.get(status.id, {})
         if entry.get("cancelled"):
             _active_downloads.pop(status.id, None)
-            await safe_edit(status, "🚫 **Download cancelled.**")
             return
         
         if not success:
-            await safe_edit(status, f"❌ **Aria2 Error:** `{result_path_or_err}`")
+            await safe_edit(status, f"❌ **Download failed:** `{result}`")
+            _active_downloads.pop(status.id, None)
             return
             
-        filepath = result_path_or_err
+        filepath = result
         if not filepath or not os.path.exists(filepath):
-            await safe_edit(status, "❌ **Error:** Download completed but file not found on disk.")
+            await safe_edit(status, "❌ **Error:** Download completed but file not found.")
+            _active_downloads.pop(status.id, None)
             return
 
         filename = os.path.basename(filepath)
         size = os.path.getsize(filepath)
 
-        await safe_edit(status, "✂️ **Checking file size for splitting...**")
-        _active_downloads.pop(status.id, None)  # no longer cancellable mid-upload
+        await safe_edit(status, "✂️ **Processing file...**")
+        _active_downloads.pop(status.id, None)
 
-        
-        # 2. Split file natively if > 1.9GB
+        # 2. Split file if > 1.9GB
         file_parts = await split_large_file(filepath)
         total_parts = len(file_parts)
         
-        # 3. Download the custom thumb if set (we need a local file for upload)
-        thumb_path = None
+        # 3. Download custom thumbnail if set
         if custom_thumb_id:
-            thumb_path = await client.download_media(custom_thumb_id)
+            try:
+                thumb_path = await client.download_media(custom_thumb_id)
+            except Exception as e:
+                print(f"[thumb] Failed to download thumbnail: {e}")
 
         upload_start = time.time()
 
@@ -269,229 +426,330 @@ async def leech_handler(client, message):
         for idx, part in enumerate(file_parts, start=1):
             part_size = os.path.getsize(part)
             part_name = os.path.basename(part)
-            part_label = f"Part {idx}/{total_parts} " if total_parts > 1 else ""
+            part_label = f"Part {idx}/{total_parts}" if total_parts > 1 else filename
 
-            last_cb = [time.time()]
+            last_update = [time.time()]
 
-            async def up_progress(current, total,
-                                  _label=part_label,
-                                  _start=upload_start,
-                                  _last=last_cb):
+            async def up_progress(current: int, total: int, _label: str = part_label, _start: float = upload_start, _last: list = last_update):
                 now = time.time()
                 if now - _last[0] >= FLOOD_COOLDOWN:
                     await safe_edit(
                         status,
-                        format_progress(
-                            current, total, _start,
-                            f"Uploading {_label}"
-                        ),
+                        format_progress(current, total, _start, f"📤 Uploading {_label}"),
                     )
                     _last[0] = now
 
+            # Build caption
             caption_lines = [
-                f"🏷 **{part_name}**",
-                f"💾 {format_bytes(part_size)}",
+                f"📁 **{part_name}**",
+                f"💾 Size: `{format_bytes(part_size)}`",
             ]
             if total_parts > 1:
                 caption_lines.append(f"📂 Part **{idx}** of **{total_parts}**")
             
             if custom_caption:
-                caption_lines.append("")
-                caption_lines.append(custom_caption)
+                caption_lines.extend(["", custom_caption])
                 
             caption = "\n".join(caption_lines)
 
-            send_kwargs = dict(
-                chat_id=target_chat_id,
-                caption=caption,
-                progress=up_progress,
-                parse_mode=enums.ParseMode.MARKDOWN,
-            )
+            # Upload as document
+            send_kwargs = {
+                "chat_id": target_chat_id,
+                "document": part,
+                "caption": caption,
+                "parse_mode": enums.ParseMode.MARKDOWN,
+                "progress": up_progress,
+            }
             
-            # If we are replying in the same chat, we can reply directly
             if target_chat_id == message.chat.id:
                 send_kwargs["reply_to_message_id"] = message.id
                 
-            if thumb_path:
+            if thumb_path and os.path.exists(thumb_path):
                 send_kwargs["thumb"] = thumb_path
 
-            # Auto upload as Document to prevent streaming bottlenecks and re-encoding
-            await client.send_document(
-                document=part,
-                **send_kwargs,
-            )
+            await client.send_document(**send_kwargs)
 
-            # Brief delay between consecutive parts (anti-ban)
+            # Anti-ban delay between parts
             if idx < total_parts:
                 await asyncio.sleep(random.uniform(1.0, 2.5))
 
-        await safe_edit(status, "✅ **All done!** 🎉")
+        await safe_edit(status, "✅ **Upload complete!** 🎉")
 
     except asyncio.CancelledError:
-        _active_downloads.pop(status.id, None)
         await safe_edit(status, "🚫 **Download cancelled.**")
 
     except Exception as exc:
-        _active_downloads.pop(status.id, None)
-        await safe_edit(status, f"❌ **Error:** `{str(exc)}`")
+        print(f"[process_download] Error: {exc}")
+        await safe_edit(status, f"❌ **Error:** `{str(exc)[:200]}`")
 
     finally:
         _active_downloads.pop(status.id, None)
-        # Cleanup part files
+        
+        # Cleanup files
         try:
-            if 'file_parts' in locals():
-                for p in file_parts:
-                    if p != filepath and os.path.exists(p):
-                        os.remove(p)
-            if 'filepath' in locals() and filepath and os.path.exists(filepath):
+            for part in file_parts:
+                if part != filepath and os.path.exists(part):
+                    os.remove(part)
+                    print(f"[cleanup] Removed part: {part}")
+            
+            if filepath and os.path.exists(filepath):
                 os.remove(filepath)
-            if 'thumb_path' in locals() and thumb_path and os.path.exists(thumb_path):
+                print(f"[cleanup] Removed original: {filepath}")
+                
+            if thumb_path and os.path.exists(thumb_path):
                 os.remove(thumb_path)
-        except Exception:
-            pass
-
+                print(f"[cleanup] Removed thumbnail: {thumb_path}")
+        except Exception as e:
+            print(f"[cleanup] Error: {e}")
 
 
 # ---------------------------------------------------------------------------
-# Dummy web server — keeps Render/Heroku alive & Serves Web UI
+# Main Leech Handler - Downloads and Uploads
+# ---------------------------------------------------------------------------
+@app.on_message(filters.text & filters.regex(r"(https?://\S+|magnet:\?xt=urn:btih:\S+)"))
+async def leech_handler(client: Client, message: Message) -> None:
+    """Handle download URLs and upload files to Telegram."""
+    if settings.OWNER_ID and message.from_user.id != settings.OWNER_ID:
+        return
+        
+    url = message.text.strip()
+    status = await message.reply_text(
+        "🔍 **Initializing download...**",
+        parse_mode=enums.ParseMode.MARKDOWN,
+    )
+    
+    await process_download(client, message, url, status)
+
+
+# ---------------------------------------------------------------------------
+# Web Server with WebSocket
 # ---------------------------------------------------------------------------
 async def ping_server():
-    """Periodically ping the SELF_PING_URL to prevent Render from sleeping."""
+    """Self-ping to keep Render/Heroku instance alive."""
     while True:
-        await asyncio.sleep(600)  # Ping every 10 minutes
+        await asyncio.sleep(600)
         if settings.SELF_PING_URL:
             try:
-                async with aiohttp.ClientSession() as session:
+                from aiohttp import ClientSession, ClientTimeout
+                async with ClientSession() as session:
                     async with session.get(
                         settings.SELF_PING_URL,
-                        timeout=aiohttp.ClientTimeout(total=10),
+                        timeout=ClientTimeout(total=10),
                     ) as response:
-                        print(f"Self-ping status: {response.status}")
+                        print(f"[ping] Status: {response.status}")
             except Exception as e:
-                print(f"Self-ping failed: {e}")
+                print(f"[ping] Failed: {e}")
+
 
 async def health_check(request):
-    return web.Response(text="TG Leecher is alive!")
+    """Health check endpoint."""
+    return web.json_response({
+        "status": "ok",
+        "service": "TG Leecher",
+        "timestamp": time.time()
+    })
 
-async def web_download_task(ws, url):
-    """Handles downloading from the Web UI using Aria2."""
+
+async def web_download_task(ws, url: str, cleanup_torrent: str = None):
+    """Handle download from Web UI via WebSocket."""
+    filepath = None
+    file_parts = []
+    
     try:
-        await ws.send_json({"status": "adding to aria2...", "percentage": 0})
-        gid = await add_download(url, settings.DOWNLOAD_DIR)
+        await ws.send_json({
+            "status": "initializing",
+            "message": "Adding to Aria2...",
+            "percentage": 0
+        })
         
+        gid = await add_download(url, settings.DOWNLOAD_DIR)
         if not gid:
-            await ws.send_json({"status": "error", "message": "Failed to add to aria2"})
+            await ws.send_json({
+                "status": "error",
+                "message": "Failed to add download to Aria2"
+            })
             return
             
         start_time = time.time()
         
-        async def ws_progress(action, current, total, t0, speed=0, eta_seconds=0):
+        async def ws_progress(action: str, current: int, total: int, t0: float, speed: float = 0, eta_seconds: float = 0):
             percent = int((current / total) * 100) if total > 0 else 0
             try:
                 await ws.send_json({
-                    "status": action,
-                    "percentage": percent
+                    "status": action.lower(),
+                    "message": action,
+                    "percentage": percent,
+                    "current": current,
+                    "total": total,
+                    "speed": speed,
+                    "eta": eta_seconds
                 })
             except Exception:
                 pass
                 
-        success, result_path_or_err = await monitor_download(gid, ws_progress, start_time)
+        success, result = await monitor_download(gid, ws_progress, start_time)
         
         if not success:
-            await ws.send_json({"status": "error", "message": result_path_or_err})
+            await ws.send_json({
+                "status": "error",
+                "message": f"Download failed: {result}"
+            })
             return
             
-        filepath = result_path_or_err
+        filepath = result
         
-        await ws.send_json({"status": "splitting and uploading...", "percentage": 100})
+        await ws.send_json({
+            "status": "processing",
+            "message": "Splitting large files if needed...",
+            "percentage": 100
+        })
         
-        # Split file natively if > 1.9GB
+        # Split file if needed
         file_parts = await split_large_file(filepath)
+        total_parts = len(file_parts)
         
-        # For Web UI uploads, we fallback to default configurations (no user_id)
+        # Upload
         target_chat_id = settings.OWNER_ID
         if not target_chat_id:
-            await ws.send_json({"status": "error", "message": "OWNER_ID not set. Don't know where to upload!"})
+            await ws.send_json({
+                "status": "error",
+                "message": "OWNER_ID not configured. Cannot upload."
+            })
             return
             
-        total_parts = len(file_parts)
         for idx, part in enumerate(file_parts, start=1):
-            if total_parts > 1:
-                await ws.send_json({"status": f"uploading part {idx}/{total_parts}...", "percentage": 100})
+            await ws.send_json({
+                "status": "uploading",
+                "message": f"Uploading part {idx}/{total_parts}..." if total_parts > 1 else "Uploading...",
+                "percentage": 100,
+                "part": idx,
+                "total_parts": total_parts
+            })
             
             await app.send_document(
                 chat_id=target_chat_id,
                 document=part,
-                caption=f"Uploaded via Web UI: {os.path.basename(part)}"
+                caption=f"📤 Uploaded via Web UI\n📁 {os.path.basename(part)}"
             )
             
-        await ws.send_json({"status": "completed", "message": "Successfully uploaded to Telegram!"})
+            if idx < total_parts:
+                await asyncio.sleep(1)
         
-        # Cleanup
-        for p in file_parts:
-            if os.path.exists(p):
-                os.remove(p)
-                
+        await ws.send_json({
+            "status": "completed",
+            "message": "Successfully uploaded to Telegram!",
+            "percentage": 100
+        })
+        
     except Exception as e:
+        print(f"[web_download] Error: {e}")
         try:
-            await ws.send_json({"status": "error", "message": str(e)})
+            await ws.send_json({
+                "status": "error",
+                "message": str(e)[:200]
+            })
         except Exception:
             pass
+    finally:
+        # Cleanup
+        try:
+            for part in file_parts:
+                if part != filepath and os.path.exists(part):
+                    os.remove(part)
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+            # Cleanup uploaded torrent file
+            if cleanup_torrent and os.path.exists(cleanup_torrent):
+                os.remove(cleanup_torrent)
+                print(f"[web_cleanup] Removed torrent file: {cleanup_torrent}")
+        except Exception as e:
+            print(f"[web_cleanup] Error: {e}")
+
 
 async def websocket_handler(request):
-    ws = web.WebSocketResponse()
+    """WebSocket handler for real-time updates."""
+    ws = web.WebSocketResponse(max_msg_size=10*1024*1024)  # 10MB max for torrent files
     await ws.prepare(request)
     
     async for msg in ws:
-        if msg.type == aiohttp.WSMsgType.TEXT:
+        if msg.type == web.WSMsgType.TEXT:
             try:
                 data = json.loads(msg.data)
                 url = data.get("url")
+                torrent_data = data.get("torrent_data")  # Base64 encoded torrent
+                torrent_name = data.get("torrent_name")
+                
                 if url:
                     asyncio.create_task(web_download_task(ws, url))
+                elif torrent_data and torrent_name:
+                    # Handle torrent file upload
+                    import base64
+                    try:
+                        torrent_bytes = base64.b64decode(torrent_data)
+                        torrent_path = os.path.join(settings.DOWNLOAD_DIR, torrent_name)
+                        
+                        # Save torrent file
+                        with open(torrent_path, 'wb') as f:
+                            f.write(torrent_bytes)
+                        
+                        # Process as file:// URL
+                        file_url = f"file://{os.path.abspath(torrent_path)}"
+                        asyncio.create_task(web_download_task(ws, file_url, cleanup_torrent=torrent_path))
+                    except Exception as e:
+                        await ws.send_json({"status": "error", "message": f"Failed to process torrent: {str(e)}"})
+                else:
+                    await ws.send_json({"status": "error", "message": "No URL or torrent provided"})
+                    
+            except json.JSONDecodeError:
+                await ws.send_json({"status": "error", "message": "Invalid JSON"})
             except Exception as e:
                 await ws.send_json({"status": "error", "message": str(e)})
                 
     return ws
 
+
 async def start_web_server():
+    """Start the web server for health checks and Web UI."""
     web_app = web.Application()
     
-    # Resolve static directory relative to this file (works in Docker too)
     _here = os.path.dirname(os.path.abspath(__file__))
     _static_dir = os.path.join(_here, "static")
+    
     if os.path.exists(_static_dir):
         async def serve_index(request):
             index_path = os.path.join(_static_dir, "index.html")
             if os.path.exists(index_path):
                 return web.FileResponse(index_path)
-            return web.Response(text="Static folder found, but no index.html present.")
+            return web.Response(text="Web UI not available", status=404)
             
         web_app.router.add_get("/", serve_index)
         web_app.router.add_static("/static", _static_dir)
     else:
         web_app.router.add_get("/", health_check)
         
+    web_app.router.add_get("/health", health_check)
     web_app.router.add_get("/ws", websocket_handler)
         
     runner = web.AppRunner(web_app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", settings.PORT).start()
-    print(f"Web server started on port {settings.PORT}")
+    print(f"[web] Server started on port {settings.PORT}")
     
     asyncio.create_task(ping_server())
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Entry Point
 # ---------------------------------------------------------------------------
 async def main():
+    """Main entry point."""
     start_aria2_daemon()
     await start_web_server()
     await app.start()
-    print("Bot started. Listening for messages...")
+    print("[bot] Started successfully. Listening for messages...")
     await idle()
     await app.stop()
+
 
 if __name__ == "__main__":
     app.run(main())

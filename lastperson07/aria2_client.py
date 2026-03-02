@@ -71,8 +71,8 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
         completed_len = int(status_info.get("completedLength", 0))
         speed = int(status_info.get("downloadSpeed", 0))
         
-        # If the file is 100% downloaded but stuck in "active" (e.g. torrent seeding despite seed-time=0)
-        is_finished = (status == "complete") or (status == "active" and total_len > 0 and completed_len >= total_len)
+        # We strictly wait for "complete" to avoid racing aria2's internal parsing/assembly
+        is_finished = (status == "complete")
 
         if is_finished:
             followed_by = status_info.get("followedBy")
@@ -80,21 +80,41 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
                 current_gid = followed_by[0]
                 continue
             
-            # Find the largest actual downloaded file path
+            # Find the actual downloaded file path (accounting for torrent directories)
             files = status_info.get("files", [])
             downloaded_file = None
+            
             if files and len(files) > 0:
+                import os
+                
+                # We need to find the absolute largest file among all paths and directories
                 largest_file = None
                 max_size = 0
-                import os
+                
                 for f in files:
-                    fpath = f.get("path")
-                    if fpath and os.path.exists(fpath):
+                    base_path = f.get("path")
+                    if not base_path or not os.path.exists(base_path):
+                        continue
+                        
+                    # If aria2 handed us a Directory (very common for Torrents)
+                    if os.path.isdir(base_path):
+                        for root, _, filenames in os.walk(base_path):
+                            for fname in filenames:
+                                full_path = os.path.join(root, fname)
+                                try:
+                                    sz = os.path.getsize(full_path)
+                                    if sz > max_size:
+                                        max_size = sz
+                                        largest_file = full_path
+                                except OSError:
+                                    pass
+                    else:
+                        # It's a direct file
                         try:
-                            sz = os.path.getsize(fpath)
+                            sz = os.path.getsize(base_path)
                             if sz > max_size:
                                 max_size = sz
-                                largest_file = fpath
+                                largest_file = base_path
                         except OSError:
                             pass
                 

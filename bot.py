@@ -64,9 +64,13 @@ def start_aria2_daemon():
         "--disable-ipv6=true",
         "--disk-cache=64M",
         "--file-allocation=none",
-        "--max-connection-per-server=16",
-        "--split=16",
-        "--min-split-size=1M"
+        "--max-connection-per-server=10",
+        "--split=10",
+        "--min-split-size=10M",
+        "--timeout=600",
+        "--max-tries=5",
+        "--retry-wait=3",
+        "--seed-time=0"
     ])
     time.sleep(2)  # Give it a moment to boot
 

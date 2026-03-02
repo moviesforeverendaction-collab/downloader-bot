@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     API_HASH: str = Field(default="", description="Telegram API Hash from my.telegram.org")
     BOT_TOKEN: str = Field(default="", description="Bot token from @BotFather")
     
-    # Bot settings
-    OWNER_ID: int = Field(default=0, description="Telegram user ID of bot owner")
+    # Bot settings - OWNER_ID is now optional (for notifications only, not access control)
+    OWNER_ID: int = Field(default=0, description="Telegram user ID of bot owner (optional, for notifications)")
     
     # Web server settings
     SELF_PING_URL: str = Field(

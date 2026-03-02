@@ -70,6 +70,7 @@ async def aria2_rpc(method: str, params: list) -> Optional[Any]:
 async def add_download(uri: str, download_dir: str) -> Optional[str]:
     """
     Add a URI or magnet to aria2c and return its GID.
+    MAX SPEED settings for Heroku hosting.
 
     Args:
         uri: Download URL or magnet link
@@ -82,20 +83,48 @@ async def add_download(uri: str, download_dir: str) -> Optional[str]:
     abs_download_dir = os.path.abspath(download_dir)
     os.makedirs(abs_download_dir, exist_ok=True)
 
+    # MAX SPEED options
     options = {
         "dir": abs_download_dir,
+        # Speed - No limits
         "seed-time": "0",
+        "max-overall-download-limit": "0",
+        "max-overall-upload-limit": "0",
+        "max-download-limit": "0",
+        "max-upload-limit": "0",
+        # Connection settings - MAX
+        "max-connection-per-server": "32",
+        "split": "32",
+        "min-split-size": "1M",
         "continue": "true",
         "allow-overwrite": "true",
-        "max-file-not-found": "5",
-        "max-tries": "10",
-        "retry-wait": "5",
+        "max-concurrent-downloads": "10",
+        # Retry settings
+        "max-file-not-found": "10",
+        "max-tries": "20",
+        "retry-wait": "3",
+        "timeout": "300",
+        "connect-timeout": "60",
+        # HTTP optimizations
+        "http-accept-gzip": "true",
+        "http-no-cache": "true",
+        "reuse-uri": "true",
+        # BitTorrent optimizations
+        "bt-max-peers": "200",
+        "bt-request-peer-speed-limit": "0",
+        "bt-stop-timeout": "300",
+        "bt-save-metadata": "true",
+        "enable-dht": "true",
+        "enable-peer-exchange": "true",
+        "follow-torrent": "true",
+        # User agent
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
 
     if uri.startswith(("http://", "https://", "ftp://", "magnet:", "file://")):
         gid = await aria2_rpc("aria2.addUri", [[uri], options])
         if gid:
-            print(f"[aria2] Added download with GID: {gid} to dir: {abs_download_dir}")
+            print(f"[aria2] Added MAX SPEED download with GID: {gid} to dir: {abs_download_dir}")
         return gid
 
     print(f"[aria2] Unsupported URI scheme: {uri[:50]}...")

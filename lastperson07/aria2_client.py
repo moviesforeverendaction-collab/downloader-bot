@@ -29,9 +29,18 @@ async def add_download(uri: str, download_dir: str):
     """Add a URI (HTTP/HTTPS/FTP/Magnet) or Torrent to aria2c."""
     options = {
         "dir": download_dir,
-        "max-connection-per-server": "16",
-        "split": "16",
-        "min-split-size": "1M"
+        "max-connection-per-server": "32",
+        "split": "32",
+        "min-split-size": "1M",
+        "piece-length": "1M",
+        "seed-time": "0",
+        "max-overall-download-limit": "0",
+        "max-overall-upload-limit": "0",
+        "continue": "true",
+        "allow-overwrite": "true",
+        "disable-ipv6": "true",
+        "disk-cache": "64M",
+        "enable-mmap": "true"
     }
     
     # If it's a direct magnet or web link
@@ -71,20 +80,41 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
         completed_len = int(status_info.get("completedLength", 0))
         speed = int(status_info.get("downloadSpeed", 0))
         
-        # Torrent metadata download might finish and spawn a new GID for the actual files
-        if status == "complete":
+        # If the file is 100% downloaded but stuck in "active" (e.g. torrent seeding despite seed-time=0)
+        is_finished = (status == "complete") or (status == "active" and total_len > 0 and completed_len >= total_len)
+
+        if is_finished:
             followed_by = status_info.get("followedBy")
             if followed_by and isinstance(followed_by, list) and len(followed_by) > 0:
                 current_gid = followed_by[0]
                 continue
             
-            # Find the actual downloaded file path
+            # Find the largest actual downloaded file path
             files = status_info.get("files", [])
             downloaded_file = None
             if files and len(files) > 0:
-                # For torrents, the first item in 'files' might be a directory, or the file itself
-                downloaded_file = files[0].get("path")
+                largest_file = None
+                max_size = 0
+                import os
+                for f in files:
+                    fpath = f.get("path")
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            sz = os.path.getsize(fpath)
+                            if sz > max_size:
+                                max_size = sz
+                                largest_file = fpath
+                        except OSError:
+                            pass
+                
+                downloaded_file = largest_file
+                if not downloaded_file:
+                    downloaded_file = files[0].get("path")
             
+            # Since we manually force finish if active & 100%, we should remove the task
+            if status == "active":
+                await remove_download(current_gid)
+                
             return True, downloaded_file
             
         elif status == "error":
@@ -94,7 +124,7 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
         elif status == "removed":
             return False, "Download cancelled."
             
-        elif status == "active":
+        elif status == "active" or status == "waiting":
             now = time.time()
             if progress_callback and (now - last_update_time >= 3.0 or speed == 0):
                 # Calculate simple ETA
@@ -115,3 +145,4 @@ async def monitor_download(gid: str, progress_callback, start_time: float, actio
                 last_update_time = now
                 
         await asyncio.sleep(2)
+

@@ -59,7 +59,7 @@ heroku config:set BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11 -a your-ap
 # Optional variables (with defaults)
 heroku config:set PORT=8080 -a your-app-name
 heroku config:set DOWNLOAD_DIR=/tmp/downloads -a your-app-name
-heroku config:set OWNER_ID=0 -a your-app-name
+heroku config:set OWNER_ID=0 -a your-app-name  # Space-separated for multiple owners (e.g., "123456 789012")
 ```
 
 **Important**: Get your credentials from:

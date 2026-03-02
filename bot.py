@@ -75,6 +75,15 @@ async def safe_edit(msg: Message, text: str, reply_markup=None) -> None:
 # ---------------------------------------------------------------------------
 def start_aria2_daemon() -> None:
     """Start aria2c daemon with MAX SPEED settings for Heroku."""
+    # Check if aria2c is already running (e.g., started by heroku.sh)
+    try:
+        result = subprocess.run(["pgrep", "-f", "aria2c.*--enable-rpc"], capture_output=True, text=True)
+        if result.returncode == 0:
+            print("[aria2] Daemon already running, skipping...")
+            return
+    except Exception as e:
+        print(f"[aria2] Warning: Could not check for running daemon: {e}")
+
     print("[aria2] Starting daemon with MAX SPEED settings...")
     # Ensure download directory exists with absolute path
     download_dir = os.path.abspath(settings.DOWNLOAD_DIR)
@@ -702,7 +711,8 @@ async def web_download_task(ws, url: str, user_id: int = None, cleanup_torrent: 
         if user_id:
             target_chat_id = get_web_upload_target(user_id)
         else:
-            target_chat_id = settings.OWNER_ID if settings.OWNER_ID else None
+            # Use first owner ID if configured
+            target_chat_id = settings.owner_ids[0] if settings.owner_ids else None
         
         if not target_chat_id or target_chat_id == 0:
             await send_with_ping({

@@ -46,7 +46,7 @@ A high-performance Telegram bot for downloading files from URLs, magnet links, a
 API_ID=your_telegram_api_id          # Required - from my.telegram.org
 API_HASH=your_telegram_api_hash      # Required - from my.telegram.org
 BOT_TOKEN=your_bot_token             # Required - from @BotFather
-OWNER_ID=your_telegram_user_id       # Optional - for notifications only
+OWNER_ID=your_telegram_user_id       # Optional - for notifications only (space-separated for multiple owners)
 DOWNLOAD_DIR=./downloads             # Optional - defaults to /tmp/downloads
 PORT=8080                            # Optional - defaults to 8080
 SELF_PING_URL=optional_url           # Optional - for Heroku/Render keep-alive

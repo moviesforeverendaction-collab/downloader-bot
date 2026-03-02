@@ -702,7 +702,8 @@ async def web_download_task(ws, url: str, user_id: int = None, cleanup_torrent: 
         if user_id:
             target_chat_id = get_web_upload_target(user_id)
         else:
-            target_chat_id = settings.OWNER_ID if settings.OWNER_ID else None
+            # Use first owner ID if configured
+            target_chat_id = settings.owner_ids[0] if settings.owner_ids else None
         
         if not target_chat_id or target_chat_id == 0:
             await send_with_ping({

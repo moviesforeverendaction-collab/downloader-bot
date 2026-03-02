@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     PORT: int = Field(default=8080, description="Port for web server")
     
     # Download settings
-    DOWNLOAD_DIR: str = Field(default="./downloads", description="Directory for downloads")
+    DOWNLOAD_DIR: str = Field(default="/tmp/downloads", description="Directory for downloads")
     # 1.9 GB in bytes — safe margin below Telegram's 2 GB limit
     SPLIT_SIZE: int = Field(
         default=1900 * 1024 * 1024,
@@ -44,9 +44,11 @@ class Settings(BaseSettings):
     @field_validator("DOWNLOAD_DIR")
     @classmethod
     def validate_download_dir(cls, v):
-        """Ensure download directory exists."""
-        os.makedirs(v, exist_ok=True)
-        return v
+        """Ensure download directory exists and return absolute path."""
+        # Convert to absolute path
+        abs_path = os.path.abspath(v)
+        os.makedirs(abs_path, exist_ok=True)
+        return abs_path
     
     class Config:
         env_file = ".env"

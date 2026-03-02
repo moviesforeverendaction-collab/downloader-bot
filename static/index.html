@@ -314,7 +314,9 @@
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let selectedTorrentFile = null;
-        
+        let pingInterval = null;
+        const CLIENT_PING_INTERVAL = 20000; // Send ping every 20 seconds from client
+
         // Create floating particles
         function createParticles() {
             const container = document.getElementById('particles');
@@ -438,14 +440,27 @@
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            
+
+            // Clear any existing ping interval
+            if (pingInterval) {
+                clearInterval(pingInterval);
+                pingInterval = null;
+            }
+
             ws.onopen = function() {
                 console.log('[WS] Connected');
                 reconnectAttempts = 0;
                 updateConnectionStatus(true);
                 addLog('Connected to server', 'success');
+
+                // Start client-side ping to keep connection alive
+                pingInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({type: 'ping', timestamp: Date.now()}));
+                    }
+                }, CLIENT_PING_INTERVAL);
             };
-            
+
             ws.onmessage = function(event) {
                 try {
                     const data = JSON.parse(event.data);
@@ -454,12 +469,18 @@
                     console.error('[WS] Parse error:', e);
                 }
             };
-            
+
             ws.onclose = function() {
                 console.log('[WS] Disconnected');
                 updateConnectionStatus(false);
                 addLog('Connection lost', 'warn');
-                
+
+                // Clear ping interval
+                if (pingInterval) {
+                    clearInterval(pingInterval);
+                    pingInterval = null;
+                }
+
                 if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
                     addLog(`Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`, 'warn');
@@ -468,7 +489,7 @@
                     addLog('Max reconnection attempts reached. Please refresh.', 'error');
                 }
             };
-            
+
             ws.onerror = function(error) {
                 console.error('[WS] Error:', error);
                 addLog('WebSocket error occurred', 'error');
@@ -483,11 +504,24 @@
             const btn = document.getElementById('leechBtn');
             const btnText = document.getElementById('btnText');
             const resultMessage = document.getElementById('resultMessage');
-            
-            // Show progress section
+
+            // Handle ping messages (heartbeat from server)
+            if (data.type === 'ping') {
+                // Connection is alive, just log it for debugging
+                console.log('[WS] Server ping received');
+                return;
+            }
+
+            // Handle pong messages (response to client ping)
+            if (data.type === 'pong') {
+                console.log('[WS] Server pong received');
+                return;
+            }
+
+            // Show progress section for actual status updates
             progressSection.classList.remove('hidden');
             resultMessage.classList.add('hidden');
-            
+
             // Handle errors
             if (data.status === 'error') {
                 addLog(`Error: ${data.message}`, 'error');
@@ -495,7 +529,7 @@
                 resetButton();
                 return;
             }
-            
+
             // Handle completion
             if (data.status === 'completed') {
                 addLog('Upload completed successfully!', 'success');
@@ -507,34 +541,36 @@
                 document.getElementById('progressDot').className = 'status-dot success';
                 return;
             }
-            
+
             // Update progress info
             const statusText = data.message || data.status;
-            document.getElementById('statusTextMain').textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
-            addLog(statusText);
-            
+            if (statusText) {
+                document.getElementById('statusTextMain').textContent = statusText.charAt(0).toUpperCase() + statusText.slice(1);
+                addLog(statusText);
+            }
+
             if (data.percentage !== undefined) {
                 const pct = Math.min(100, Math.max(0, data.percentage));
                 percentageText.textContent = pct + '%';
                 progressBar.style.width = pct + '%';
             }
-            
+
             if (data.current !== undefined) {
                 document.getElementById('downloadedSize').textContent = formatBytes(data.current);
             }
-            
+
             if (data.total !== undefined && data.total > 0) {
                 document.getElementById('totalSize').textContent = formatBytes(data.total);
             }
-            
+
             if (data.speed !== undefined && data.speed > 0) {
                 document.getElementById('speedText').textContent = formatSpeed(data.speed);
             }
-            
+
             if (data.eta !== undefined) {
                 document.getElementById('etaText').textContent = formatETA(data.eta);
             }
-            
+
             // Update part info if available
             if (data.part && data.total_parts) {
                 addLog(`Uploading part ${data.part} of ${data.total_parts}`);

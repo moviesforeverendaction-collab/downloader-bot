@@ -121,27 +121,41 @@ async def _force_remove(gid: str) -> None:
         pass
 
 
-def _resolve_path(raw_path: str) -> Optional[str]:
+def _resolve_path(raw_path: str, aria2_dir: Optional[str] = None) -> Optional[str]:
     """
     Resolve a file path reported by aria2 with multiple strategies.
-    
+
     Args:
         raw_path: Path from aria2
-        
+        aria2_dir: The download directory aria2 actually used (from status['dir'])
+
     Returns:
         Absolute path if file exists, None otherwise
     """
     if not raw_path:
         return None
-    
+
     # Strategy 1: Try as-is (absolute or relative to CWD)
     abs_p = os.path.abspath(raw_path)
     if os.path.exists(abs_p):
         return abs_p
-    
-    # Strategy 2: Clean path and try relative to DOWNLOAD_DIR
+
+    # Strategy 2: If aria2 reported its dir, try resolving relative to that
+    if aria2_dir:
+        aria2_dir_abs = os.path.abspath(aria2_dir)
+        # raw_path might be relative to aria2's working dir
+        candidate = os.path.abspath(os.path.join(aria2_dir_abs, os.path.basename(raw_path)))
+        if os.path.exists(candidate):
+            return candidate
+        # Or try the raw path as-is relative to aria2_dir
+        if raw_path.startswith("./") or raw_path.startswith("../") or not raw_path.startswith("/"):
+            candidate = os.path.abspath(os.path.join(aria2_dir_abs, raw_path))
+            if os.path.exists(candidate):
+                return candidate
+
+    # Strategy 3: Clean path and try relative to DOWNLOAD_DIR
     clean = raw_path.replace("\\", "/").lstrip("./")
-    
+
     # Remove common prefixes
     prefixes = [
         "downloads/",
@@ -152,26 +166,38 @@ def _resolve_path(raw_path: str) -> Optional[str]:
         if clean.startswith(p):
             clean = clean[len(p):]
             break
-    
+
     candidate = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, clean))
     if os.path.exists(candidate):
         return candidate
-    
-    # Strategy 3: Check if basename exists in DOWNLOAD_DIR
+
+    # Strategy 4: Check if basename exists in DOWNLOAD_DIR
     base_candidate = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, os.path.basename(raw_path)))
     if os.path.exists(base_candidate):
         return base_candidate
-    
+
+    # Strategy 5: Search for file by basename in DOWNLOAD_DIR (handles encoding issues)
+    try:
+        basename = os.path.basename(raw_path)
+        for entry in os.listdir(settings.DOWNLOAD_DIR):
+            if entry == basename:
+                full_path = os.path.abspath(os.path.join(settings.DOWNLOAD_DIR, entry))
+                if os.path.exists(full_path):
+                    return full_path
+    except (OSError, IOError):
+        pass
+
     return None
 
 
-def _find_largest_file(files: List[Dict[str, Any]]) -> Optional[str]:
+def _find_largest_file(files: List[Dict[str, Any]], aria2_dir: Optional[str] = None) -> Optional[str]:
     """
     Find the largest file from aria2's file list.
-    
+
     Args:
         files: List of file objects from aria2
-        
+        aria2_dir: The download directory aria2 actually used (from status['dir'])
+
     Returns:
         Path to largest file or None
     """
@@ -179,7 +205,7 @@ def _find_largest_file(files: List[Dict[str, Any]]) -> Optional[str]:
     max_size = 0
 
     for f in files:
-        base = _resolve_path(f.get("path", ""))
+        base = _resolve_path(f.get("path", ""), aria2_dir)
         if not base:
             continue
 
@@ -274,13 +300,14 @@ async def monitor_download(
 
             # Real completion - find the file
             files = info.get("files") or []
-            filepath = _find_largest_file(files)
+            aria2_dir = info.get("dir")
+            filepath = _find_largest_file(files, aria2_dir)
 
             if not filepath and files:
                 # Last resort: try raw paths
                 for f in files:
                     raw = f.get("path", "")
-                    res = _resolve_path(raw)
+                    res = _resolve_path(raw, aria2_dir)
                     if res:
                         filepath = res
                         break
@@ -298,11 +325,12 @@ async def monitor_download(
             # Case 1: 100% complete but still active (seeding/assembly)
             if status == "active" and total_len > 0 and completed >= total_len:
                 files = info.get("files") or []
-                filepath = _find_largest_file(files)
+                aria2_dir = info.get("dir")
+                filepath = _find_largest_file(files, aria2_dir)
 
                 if not filepath and files:
                     for f in files:
-                        res = _resolve_path(f.get("path", ""))
+                        res = _resolve_path(f.get("path", ""), aria2_dir)
                         if res:
                             filepath = res
                             break
